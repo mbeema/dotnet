@@ -149,12 +149,16 @@ Production Bug Found (running v1.54.0)
 
 ## Scheduled Release
 
-The release workflow runs automatically every **Tuesday at 6 PM UTC** (sprint end).
+The release workflow runs automatically every **2 weeks on Tuesday at 6 PM UTC** (sprint end).
 
-To modify the schedule, edit the cron expression in `release.yml`:
+- Runs every Tuesday but skips alternate weeks (bi-weekly)
+- Uses even week numbers as sprint end weeks
+- Automatically calculates sprint number
+
+To modify the schedule, edit `release.yml`:
 ```yaml
 schedule:
-  - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC
+  - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC (bi-weekly check in job)
 ```
 
 ## Environment Setup
@@ -183,10 +187,12 @@ Actions → Release → Run workflow
 ### Deploy to Any Environment
 ```
 Actions → Deploy → Run workflow
-├── tag: v1.54.0
+├── tag: v1.54.0 (or "latest" for most recent)
 ├── environment: qa / stage / prod
 └── change-ticket: CHG0012345 (for prod)
 ```
+
+**Tip:** Use `latest` to deploy the most recent release without typing the tag.
 
 ### Create Hotfix Branch
 ```

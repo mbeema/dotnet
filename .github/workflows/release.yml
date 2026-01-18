@@ -41,9 +41,9 @@ on:
         required: false
         type: string
 
-  # Scheduled trigger for sprint end (Tuesday 6 PM UTC)
+  # Scheduled trigger for sprint end (Tuesday 6 PM UTC, bi-weekly)
   schedule:
-    - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC
+    - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC (bi-weekly check in job)
 
 permissions:
   contents: write
@@ -65,6 +65,7 @@ jobs:
     name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
+      skip: ${{ steps.check-schedule.outputs.skip }}
       version: ${{ steps.prepare.outputs.version }}
       tag-name: ${{ steps.prepare.outputs.tag-name }}
       artifact-name: ${{ steps.prepare.outputs.artifact-name }}
@@ -78,8 +79,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Check bi-weekly schedule
+        id: check-schedule
+        if: github.event_name == 'schedule'
+        run: |
+          # For bi-weekly sprints, only run on even weeks
+          WEEK_NUMBER=$(date +%V)
+          if [ $((WEEK_NUMBER % 2)) -ne 0 ]; then
+            echo "Skipping - not a sprint end week (week ${WEEK_NUMBER})"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Sprint end week (week ${WEEK_NUMBER}) - proceeding"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Validate and prepare
         id: prepare
+        if: github.event_name != 'schedule' || steps.check-schedule.outputs.skip != 'true'
         run: |
           # Determine if this is a scheduled run or manual
           if [ "${{ github.event_name }}" == "schedule" ]; then
@@ -173,6 +189,7 @@ jobs:
   build:
     name: Build
     needs: prepare
+    if: needs.prepare.outputs.skip != 'true'
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -185,6 +202,7 @@ jobs:
   create-tag:
     name: Create Tag
     needs: [prepare, build]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -235,6 +253,7 @@ jobs:
   create-release:
     name: Create GitHub Release
     needs: [prepare, build, create-tag]
+    if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -307,18 +326,25 @@ jobs:
     steps:
       - name: Generate summary
         run: |
-          echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Type:** ${{ needs.prepare.outputs.release-type }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ needs.prepare.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pipeline Status" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "Run **Deploy** workflow to deploy \`${{ needs.prepare.outputs.tag-name }}\` to any environment" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.prepare.outputs.skip }}" == "true" ]; then
+            echo "## ⏭️ Release Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Not a sprint end week (bi-weekly schedule)." >> $GITHUB_STEP_SUMMARY
+            echo "Next sprint release will run on the next even week." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Type:** ${{ needs.prepare.outputs.release-type }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Tag:** ${{ needs.prepare.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Pipeline Status" >> $GITHUB_STEP_SUMMARY
+            echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+            echo "Run **Deploy** workflow to deploy \`${{ needs.prepare.outputs.tag-name }}\` to any environment" >> $GITHUB_STEP_SUMMARY
+          fi

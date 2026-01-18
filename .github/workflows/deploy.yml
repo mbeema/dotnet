@@ -11,9 +11,10 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to deploy (e.g., v1.54.0)'
+        description: 'Release tag (e.g., v1.54.0) or "latest" for most recent'
         required: true
         type: string
+        default: 'latest'
       environment:
         description: 'Target environment'
         required: true
@@ -43,17 +44,31 @@ jobs:
     name: Validate
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.validate.outputs.version }}
+      tag: ${{ steps.validate.outputs.tag }}
 
     steps:
-      - name: Validate inputs
+      - name: Resolve and validate tag
         id: validate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          INPUT_TAG="${{ inputs.tag }}"
+
+          # Resolve "latest" to actual tag
+          if [ "$INPUT_TAG" == "latest" ]; then
+            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName')
+            if [ -z "$TAG" ]; then
+              echo "::error::No releases found!"
+              exit 1
+            fi
+            echo "Resolved 'latest' to: ${TAG}"
+          else
+            TAG="$INPUT_TAG"
+          fi
+
           # Validate tag exists
-          if ! gh release view "${{ inputs.tag }}" --repo ${{ github.repository }} > /dev/null 2>&1; then
-            echo "::error::Release for tag '${{ inputs.tag }}' not found!"
+          if ! gh release view "${TAG}" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "::error::Release for tag '${TAG}' not found!"
             echo ""
             echo "Available releases:"
             gh release list --repo ${{ github.repository }} --limit 10
@@ -65,8 +80,8 @@ jobs:
             echo "::warning::No change ticket provided for production deployment"
           fi
 
-          echo "✅ Release found for tag: ${{ inputs.tag }}"
-          echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          echo "✅ Release found: ${TAG}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
   # ---------------------------------------------------------------------------
   # Deploy
@@ -84,8 +99,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Downloading artifact from release: ${{ inputs.tag }}"
-          gh release download "${{ inputs.tag }}" \
+          TAG="${{ needs.validate.outputs.tag }}"
+          echo "Downloading artifact from release: ${TAG}"
+          gh release download "${TAG}" \
             --pattern "artifact.zip" \
             --repo ${{ github.repository }}
 
@@ -99,7 +115,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`${{ inputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${{ needs.validate.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
@@ -113,7 +129,7 @@ jobs:
           echo "  DEPLOYING TO ${{ inputs.environment }}"
           echo "=========================================="
           VERSION=$(jq -r '.version' ./deploy/build-info.json)
-          echo "Tag         : ${{ inputs.tag }}"
+          echo "Tag         : ${{ needs.validate.outputs.tag }}"
           echo "Version     : ${VERSION}"
           echo "Environment : ${{ inputs.environment }}"
           echo "Ticket      : ${{ inputs.change-ticket || 'N/A' }}"
@@ -147,16 +163,17 @@ jobs:
 
       - name: Update production tag
         run: |
+          TAG="${{ needs.validate.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Update prod tag to point to deployed release
           git tag -d prod 2>/dev/null || true
           git push origin :refs/tags/prod 2>/dev/null || true
-          git tag -a prod -m "Production: ${{ inputs.tag }}" ${{ inputs.tag }}
+          git tag -a prod -m "Production: ${TAG}" "${TAG}"
           git push origin prod
 
-          echo "✅ Updated 'prod' tag to point to ${{ inputs.tag }}"
+          echo "✅ Updated 'prod' tag to point to ${TAG}"
 
   # ---------------------------------------------------------------------------
   # Summary
@@ -173,17 +190,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "${{ inputs.tag }}" \
+          TAG="${{ needs.validate.outputs.tag }}"
+          gh release download "${TAG}" \
             --pattern "artifact.zip" \
             --repo ${{ github.repository }}
           unzip -o artifact.zip -d ./deploy
 
       - name: Generate summary
         run: |
+          TAG="${{ needs.validate.outputs.tag }}"
           if [ -f "./deploy/build-info.json" ]; then
             VERSION=$(jq -r '.version' ./deploy/build-info.json)
           else
-            VERSION="${{ inputs.tag }}"
+            VERSION="${TAG}"
           fi
 
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -191,7 +210,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`${{ inputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${TAG}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ${{ needs.deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
@@ -202,7 +221,7 @@ jobs:
             echo "**Rollback:** Run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
 
             # Cherry-pick reminder for hotfixes (patch version > 0)
-            PATCH_VERSION=$(echo "${{ inputs.tag }}" | sed 's/v[0-9]*\.[0-9]*\.//')
+            PATCH_VERSION=$(echo "${TAG}" | sed 's/v[0-9]*\.[0-9]*\.//')
             if [[ "$PATCH_VERSION" != "0" ]]; then
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "### ⚠️ Hotfix: Cherry-pick to main required" >> $GITHUB_STEP_SUMMARY
