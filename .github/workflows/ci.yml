@@ -1,0 +1,218 @@
+# =============================================================================
+# CI WORKFLOW - Build, Test, Deploy to QA
+# =============================================================================
+# Triggers:
+#   - PR to main        → Build + Test (validation only)
+#   - Push to main      → Build + Test + Deploy to QA
+#   - Push to hotfix/*  → Build + Test + Deploy to QA
+# =============================================================================
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - main
+      - 'hotfix/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  # ===========================================================================
+  # BUILD & TEST
+  # ===========================================================================
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact-name: ${{ steps.version.outputs.artifact-name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Generate version
+        id: version
+        run: |
+          if [[ "${{ github.ref_name }}" == hotfix/* ]]; then
+            VERSION="0.0.${{ github.run_number }}-hotfix"
+          elif [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            VERSION="0.0.${{ github.run_number }}-pr${{ github.event.pull_request.number }}"
+          else
+            VERSION="0.0.${{ github.run_number }}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "artifact-name=app-${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Test
+        run: dotnet test --no-build -c Release --verbosity normal
+
+      - name: Publish
+        if: github.event_name == 'push'
+        run: dotnet publish src/Calculator/Calculator.csproj --no-build -c Release -o ./publish
+
+      - name: Add build info
+        if: github.event_name == 'push'
+        run: |
+          cat > ./publish/build-info.json << EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+      - name: Upload artifact
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact-name }}
+          path: ./publish
+          retention-days: 7
+
+  # ===========================================================================
+  # SECURITY SCAN
+  # ===========================================================================
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Check vulnerable packages
+        id: vuln-check
+        run: |
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Run vulnerability check and capture output
+          RESULT=$(dotnet list package --vulnerable --include-transitive 2>&1) || true
+
+          if echo "$RESULT" | grep -q "has the following vulnerable packages"; then
+            echo "::warning::Vulnerable packages detected!"
+            echo "### ⚠️ Vulnerable Packages Found" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "$RESULT" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "vulnerable=true" >> $GITHUB_OUTPUT
+          else
+            echo "### ✅ No Vulnerabilities Found" >> $GITHUB_STEP_SUMMARY
+            echo "vulnerable=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check outdated packages
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Outdated Packages" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          dotnet list package --outdated >> $GITHUB_STEP_SUMMARY 2>&1 || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # DEPLOY TO QA (only on push to main or hotfix/*)
+  # ===========================================================================
+  deploy-qa:
+    name: Deploy to QA
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://qa.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./deploy
+
+      - name: Deploy to QA
+        run: |
+          echo "============================================"
+          echo "  DEPLOYING TO QA"
+          echo "============================================"
+          echo "Version: ${{ needs.build.outputs.version }}"
+          echo "Branch:  ${{ github.ref_name }}"
+          echo ""
+          cat ./deploy/build-info.json
+          echo ""
+          echo "--------------------------------------------"
+          echo "Running deployment script..."
+          echo "--------------------------------------------"
+          # =============================================
+          # DUMMY DEPLOYMENT - Replace with actual deploy
+          # =============================================
+          sleep 2
+          echo "Deployment successful!"
+          exit 0
+
+      - name: Smoke test
+        run: |
+          echo "Running smoke tests..."
+          # Add actual smoke tests here
+          echo "Smoke tests passed!"
+
+  # ===========================================================================
+  # SUMMARY
+  # ===========================================================================
+  summary:
+    name: Summary
+    needs: [build, security, deploy-qa]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Trigger | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.ref_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ needs.build.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build & Test | ${{ needs.build.result == 'success' && 'Pass' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security Scan | ${{ needs.security.result == 'success' && 'Pass' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "| Deploy QA | ${{ needs.deploy-qa.result == 'success' && 'Pass' || needs.deploy-qa.result == 'skipped' && 'Skipped' || 'Fail' }} |" >> $GITHUB_STEP_SUMMARY
+          fi

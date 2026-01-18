@@ -1,8 +1,9 @@
 # =============================================================================
-# DEPLOY WORKFLOW
+# DEPLOY WORKFLOW - Deploy releases to environments
 # =============================================================================
-# Deploy any release to any environment (QA, Stage, Prod)
-# Downloads artifact from GitHub Release and deploys
+# Triggers: Manual only
+# Environments: QA, Stage, Prod
+# Source: GitHub Release artifact
 # =============================================================================
 
 name: Deploy
@@ -11,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v1.54.0) or "latest" for most recent'
+        description: 'Release tag (e.g., v1.54.0) or "latest"'
         required: true
         type: string
         default: 'latest'
@@ -20,45 +21,46 @@ on:
         required: true
         type: choice
         options:
-          - 'qa'
-          - 'stage'
-          - 'prod'
-      change-ticket:
+          - qa
+          - stage
+          - prod
+      ticket:
         description: 'Change ticket (required for prod)'
         required: false
         type: string
 
 permissions:
   contents: write
-  actions: read
+  pull-requests: write
 
 concurrency:
   group: deploy-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Validate
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # VALIDATE
+  # ===========================================================================
   validate:
     name: Validate
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.validate.outputs.tag }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
 
     steps:
-      - name: Resolve and validate tag
-        id: validate
+      - name: Resolve tag
+        id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           INPUT_TAG="${{ inputs.tag }}"
 
-          # Resolve "latest" to actual tag
-          if [ "$INPUT_TAG" == "latest" ]; then
-            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName --jq '.[0].tagName')
-            if [ -z "$TAG" ]; then
-              echo "::error::No releases found!"
+          # Resolve "latest"
+          if [[ "$INPUT_TAG" == "latest" ]]; then
+            TAG=$(gh release list --repo ${{ github.repository }} --limit 1 --json tagName -q '.[0].tagName')
+            if [[ -z "$TAG" ]]; then
+              echo "::error::No releases found"
               exit 1
             fi
             echo "Resolved 'latest' to: ${TAG}"
@@ -66,226 +68,265 @@ jobs:
             TAG="$INPUT_TAG"
           fi
 
-          # Validate tag exists
+          # Validate release exists
           if ! gh release view "${TAG}" --repo ${{ github.repository }} > /dev/null 2>&1; then
-            echo "::error::Release for tag '${TAG}' not found!"
-            echo ""
+            echo "::error::Release ${TAG} not found"
             echo "Available releases:"
-            gh release list --repo ${{ github.repository }} --limit 10
+            gh release list --repo ${{ github.repository }} --limit 5
             exit 1
           fi
 
-          # Require change ticket for prod
-          if [ "${{ inputs.environment }}" == "prod" ] && [ -z "${{ inputs.change-ticket }}" ]; then
-            echo "::warning::No change ticket provided for production deployment"
+          # Warn if prod without ticket
+          if [[ "${{ inputs.environment }}" == "prod" && -z "${{ inputs.ticket }}" ]]; then
+            echo "::warning::No change ticket for prod deployment"
           fi
 
-          echo "✅ Release found: ${TAG}"
+          VERSION="${TAG#v}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
-  # ---------------------------------------------------------------------------
-  # Deploy
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # DEPLOY
+  # ===========================================================================
   deploy:
     name: Deploy to ${{ inputs.environment }}
     needs: validate
     runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.info.outputs.source }}
     environment:
       name: ${{ inputs.environment }}
       url: https://${{ inputs.environment }}.example.com
 
     steps:
-      - name: Download artifact from GitHub Release
+      - name: Download artifact
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ needs.validate.outputs.tag }}"
-          echo "Downloading artifact from release: ${TAG}"
-          gh release download "${TAG}" \
+          gh release download "${{ needs.validate.outputs.tag }}" \
             --pattern "artifact.zip" \
             --repo ${{ github.repository }}
-
           unzip -o artifact.zip -d ./deploy
-          echo "✅ Artifact downloaded and extracted"
 
-      - name: Pre-deployment info
+      - name: Extract build info
+        id: info
         run: |
-          VERSION=$(jq -r '.version' ./deploy/build-info.json)
-          echo "## Pre-deployment Info" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`${{ needs.validate.outputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ inputs.change-ticket }}" ]; then
-            echo "| Change Ticket | ${{ inputs.change-ticket }} |" >> $GITHUB_STEP_SUMMARY
-          fi
+          SOURCE=$(jq -r '.source // "main"' ./deploy/build-info.json)
+          echo "source=${SOURCE}" >> $GITHUB_OUTPUT
+          echo "Source branch: ${SOURCE}"
 
-      - name: Deploy to ${{ inputs.environment }}
+      - name: Deploy
         run: |
-          echo "=========================================="
+          echo "============================================"
           echo "  DEPLOYING TO ${{ inputs.environment }}"
-          echo "=========================================="
-          VERSION=$(jq -r '.version' ./deploy/build-info.json)
-          echo "Tag         : ${{ needs.validate.outputs.tag }}"
-          echo "Version     : ${VERSION}"
-          echo "Environment : ${{ inputs.environment }}"
-          echo "Ticket      : ${{ inputs.change-ticket || 'N/A' }}"
+          echo "============================================"
           echo ""
+          echo "Tag:         ${{ needs.validate.outputs.tag }}"
+          echo "Version:     ${{ needs.validate.outputs.version }}"
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Ticket:      ${{ inputs.ticket || 'N/A' }}"
+          echo "Deployed by: ${{ github.actor }}"
+          echo ""
+          echo "Build info:"
           cat ./deploy/build-info.json
           echo ""
-          # Add actual deployment commands here
-          echo "Deployment complete!"
+          echo "--------------------------------------------"
+          echo "Running deployment script..."
+          echo "--------------------------------------------"
+          # =============================================
+          # DUMMY DEPLOYMENT - Replace with actual deploy
+          # Example for Azure App Service:
+          # az webapp deploy --resource-group $RG --name $APP --src-path ./deploy
+          # =============================================
+          sleep 3
+          echo "Deployment successful!"
+          exit 0
 
       - name: Smoke test
         run: |
           echo "Running smoke tests for ${{ inputs.environment }}..."
-          # Add actual smoke tests here
+          # Add actual smoke tests
           # Example: curl -f https://${{ inputs.environment }}.example.com/health
+          sleep 1
           echo "Smoke tests passed!"
 
-  # ---------------------------------------------------------------------------
-  # Post-deployment (prod only)
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # POST-DEPLOY (Prod only)
+  # ===========================================================================
   post-deploy:
-    name: Post-deployment
+    name: Post-deploy
     needs: [validate, deploy]
     if: inputs.environment == 'prod'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout for tagging
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Update production tag
+      - name: Update prod tag
         run: |
-          TAG="${{ needs.validate.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Update prod tag to point to deployed release
+          # Move 'prod' tag to current release
           git tag -d prod 2>/dev/null || true
           git push origin :refs/tags/prod 2>/dev/null || true
-          git tag -a prod -m "Production: ${TAG}" "${TAG}"
+          git tag -a prod -m "Production: ${{ needs.validate.outputs.tag }}" "${{ needs.validate.outputs.tag }}"
           git push origin prod
 
-          echo "✅ Updated 'prod' tag to point to ${TAG}"
+          echo "Updated 'prod' tag to ${{ needs.validate.outputs.tag }}"
 
-  # ---------------------------------------------------------------------------
-  # Update GitHub Release with deployment status
-  # ---------------------------------------------------------------------------
+      - name: Create PR to merge hotfix to main
+        if: startsWith(needs.deploy.outputs.source, 'hotfix/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HOTFIX_BRANCH="${{ needs.deploy.outputs.source }}"
+          TAG="${{ needs.validate.outputs.tag }}"
+          TICKET="${{ inputs.ticket }}"
+
+          echo "Creating PR to merge ${HOTFIX_BRANCH} to main..."
+
+          # Check if PR already exists
+          EXISTING_PR=$(gh pr list --head "${HOTFIX_BRANCH}" --base main --json number -q '.[0].number')
+
+          if [[ -n "$EXISTING_PR" ]]; then
+            echo "PR #${EXISTING_PR} already exists"
+            echo "::notice::Existing PR: https://github.com/${{ github.repository }}/pull/${EXISTING_PR}"
+          else
+            # Create PR body file
+            cat > /tmp/pr-body.md << 'PREOF'
+          ## Hotfix Merge
+
+          This PR was auto-created after deploying hotfix to production.
+
+          ### Checklist
+          - [ ] Review changes
+          - [ ] Resolve any conflicts
+          - [ ] Merge to main
+          PREOF
+
+            # Create PR
+            PR_URL=$(gh pr create \
+              --base main \
+              --head "${HOTFIX_BRANCH}" \
+              --title "Merge hotfix ${TAG} to main" \
+              --body-file /tmp/pr-body.md)
+
+            echo "Created PR: ${PR_URL}"
+            echo "::notice::Created PR: ${PR_URL}"
+          fi
+
+  # ===========================================================================
+  # UPDATE RELEASE
+  # ===========================================================================
   update-release:
-    name: Update Release Status
+    name: Update Release
     needs: [validate, deploy]
-    if: needs.deploy.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Update GitHub Release body
+      - name: Add deployment status
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.validate.outputs.tag }}"
           ENV="${{ inputs.environment }}"
-          ACTOR="${{ github.actor }}"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
 
-          # Get current release body
-          CURRENT_BODY=$(gh release view "${TAG}" --repo ${{ github.repository }} --json body --jq '.body')
+          CURRENT=$(gh release view "${TAG}" --repo ${{ github.repository }} --json body -q '.body')
 
-          # Create deployment status line
-          DEPLOY_LINE="| ${ENV} | ✅ ${ACTOR} @ ${TIMESTAMP} |"
-
-          # Check if deployment status table exists
-          if echo "$CURRENT_BODY" | grep -q "### Deployment Status"; then
-            # Check if this environment is already in the table
-            if echo "$CURRENT_BODY" | grep -q "| ${ENV} |"; then
-              # Replace existing line for this environment
-              NEW_BODY=$(echo "$CURRENT_BODY" | awk -v env="${ENV}" -v line="${DEPLOY_LINE}" '
-                /\| '"${ENV}"' \|/ { print line; next }
-                { print }
-              ')
-            else
-              # Add new row to existing table (after the header row)
-              NEW_BODY=$(echo "$CURRENT_BODY" | awk -v line="${DEPLOY_LINE}" '
-                /\|----------/ { print; print line; next }
-                { print }
-              ')
-            fi
+          if echo "$CURRENT" | grep -q "### Deployments"; then
+            # Add to existing table
+            NEW_BODY=$(echo "$CURRENT" | sed "/### Deployments/a | ${ENV} | ${{ github.actor }} | ${TIMESTAMP} |")
           else
-            # Add new deployment status section at the end
-            NEW_BODY="${CURRENT_BODY}
+            # Create deployments section
+            NEW_BODY="${CURRENT}
 
-### Deployment Status
-| Environment | Status |
-|-------------|--------|
-${DEPLOY_LINE}"
+          ### Deployments
+          | Env | By | When |
+          |-----|-----|------|
+          | ${ENV} | ${{ github.actor }} | ${TIMESTAMP} |"
           fi
 
-          # Update the release
-          echo "$NEW_BODY" > /tmp/release-body.md
-          gh release edit "${TAG}" --repo ${{ github.repository }} --notes-file /tmp/release-body.md
+          echo "$NEW_BODY" > /tmp/body.md
+          gh release edit "${TAG}" --repo ${{ github.repository }} --notes-file /tmp/body.md
 
-          echo "✅ Updated release ${TAG} with ${ENV} deployment status"
-
-  # ---------------------------------------------------------------------------
-  # Summary
-  # ---------------------------------------------------------------------------
-  summary:
-    name: Deployment Summary
-    needs: [validate, deploy, update-release]
+  # ===========================================================================
+  # NOTIFY (Slack notification for prod deployments)
+  # ===========================================================================
+  notify:
+    name: Notify
+    needs: [validate, deploy]
+    if: always() && inputs.environment == 'prod'
     runs-on: ubuntu-latest
-    if: always()
 
     steps:
-      - name: Download artifact for version
-        if: needs.deploy.result == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.validate.outputs.tag }}"
-          gh release download "${TAG}" \
-            --pattern "artifact.zip" \
-            --repo ${{ github.repository }}
-          unzip -o artifact.zip -d ./deploy
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.deploy.result == 'success' && '✅ Production Deployment Successful' || '❌ Production Deployment Failed' }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Tag:*\n${{ needs.validate.outputs.tag }}" },
+                    { "type": "mrkdwn", "text": "*Version:*\n${{ needs.validate.outputs.version }}" },
+                    { "type": "mrkdwn", "text": "*Deployed by:*\n${{ github.actor }}" },
+                    { "type": "mrkdwn", "text": "*Ticket:*\n${{ inputs.ticket || 'N/A' }}" }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": { "type": "plain_text", "text": "View Run" },
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
 
+  # ===========================================================================
+  # SUMMARY
+  # ===========================================================================
+  summary:
+    name: Summary
+    needs: [validate, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
       - name: Generate summary
         run: |
-          TAG="${{ needs.validate.outputs.tag }}"
-          if [ -f "./deploy/build-info.json" ]; then
-            VERSION=$(jq -r '.version' ./deploy/build-info.json)
-          else
-            VERSION="${TAG}"
-          fi
-
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | \`${TAG}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${{ needs.validate.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Status | ${{ needs.deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ needs.deploy.result == 'success' && 'Success' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployed by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          if [[ -n "${{ inputs.ticket }}" ]]; then
+            echo "| Ticket | ${{ inputs.ticket }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          if [ "${{ inputs.environment }}" == "prod" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Rollback:** Run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
-
-            # Cherry-pick reminder for hotfixes (patch version > 0)
-            PATCH_VERSION=$(echo "${TAG}" | sed 's/v[0-9]*\.[0-9]*\.//')
-            if [[ "$PATCH_VERSION" != "0" ]]; then
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "### ⚠️ Hotfix: Cherry-pick to main required" >> $GITHUB_STEP_SUMMARY
-              echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-              echo "git checkout main && git pull" >> $GITHUB_STEP_SUMMARY
-              echo "git cherry-pick <hotfix-commit-sha>" >> $GITHUB_STEP_SUMMARY
-              echo "git push" >> $GITHUB_STEP_SUMMARY
-              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            fi
+          if [[ "${{ inputs.environment }}" == "prod" ]]; then
+            echo "### Rollback" >> $GITHUB_STEP_SUMMARY
+            echo "Re-run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
           fi

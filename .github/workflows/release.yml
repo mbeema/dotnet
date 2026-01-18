@@ -1,53 +1,46 @@
 # =============================================================================
-# RELEASE WORKFLOW
+# RELEASE WORKFLOW - Create versioned releases
 # =============================================================================
-# Build any branch → Tag → GitHub Release (no deployment)
-# Deployments are handled separately by deploy.yml
-# Can be triggered manually or scheduled for sprint end
+# Triggers:
+#   - Manual: Create sprint or hotfix release
+#   - Schedule: Auto-create sprint release (bi-weekly Tuesday 6 PM UTC)
+#
+# Version is AUTO-CALCULATED:
+#   - Sprint: Last sprint + 1 (e.g., v1.54.0 → v1.55.0)
+#   - Hotfix: Last patch + 1 (e.g., v1.54.0 → v1.54.1)
 # =============================================================================
 
 name: Release
 
 on:
-  # Manual trigger
   workflow_dispatch:
     inputs:
-      release-type:
+      type:
         description: 'Release type'
         required: true
         type: choice
         options:
-          - 'sprint'
-          - 'hotfix'
-      sprint-number:
-        description: 'Sprint number (e.g., 54)'
-        required: true
-        type: string
-      hotfix-number:
-        description: 'Hotfix number (only for hotfix, e.g., 1, 2, 3)'
+          - sprint
+          - hotfix
+      sprint:
+        description: 'Sprint number (for hotfix only, e.g., 54 - auto-detects branch and version)'
         required: false
         type: string
-        default: '1'
-      base-tag:
-        description: 'Base tag for hotfix (e.g., v1.54.0)'
+      source:
+        description: 'Source branch (optional - auto-detected from sprint number for hotfix)'
         required: false
         type: string
-      hotfix-branch:
-        description: 'Hotfix branch (e.g., hotfix/INC001-fix-login)'
-        required: false
-        type: string
-      release-notes:
+        default: ''
+      notes:
         description: 'Release notes'
         required: false
         type: string
 
-  # Scheduled trigger for sprint end (Tuesday 6 PM UTC, bi-weekly)
   schedule:
-    - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC (bi-weekly check in job)
+    - cron: '0 18 * * 2'  # Tuesday 6 PM UTC (bi-weekly)
 
 permissions:
   contents: write
-  actions: read
 
 concurrency:
   group: release
@@ -58,293 +51,373 @@ env:
   DOTNET_NOLOGO: true
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Validate and prepare
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # PREPARE - Auto-calculate version
+  # ===========================================================================
   prepare:
-    name: Prepare Release
+    name: Prepare
     runs-on: ubuntu-latest
     outputs:
-      skip: ${{ steps.check-schedule.outputs.skip }}
-      version: ${{ steps.prepare.outputs.version }}
-      tag-name: ${{ steps.prepare.outputs.tag-name }}
-      artifact-name: ${{ steps.prepare.outputs.artifact-name }}
-      ref: ${{ steps.prepare.outputs.ref }}
-      release-type: ${{ steps.prepare.outputs.release-type }}
-      sprint-number: ${{ steps.prepare.outputs.sprint-number }}
+      skip: ${{ steps.config.outputs.skip }}
+      version: ${{ steps.config.outputs.version }}
+      tag: ${{ steps.config.outputs.tag }}
+      source: ${{ steps.config.outputs.source }}
+      type: ${{ steps.config.outputs.type }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check bi-weekly schedule
-        id: check-schedule
-        if: github.event_name == 'schedule'
+      - name: Calculate version
+        id: config
         run: |
-          # For bi-weekly sprints, only run on even weeks
-          WEEK_NUMBER=$(date +%V)
-          if [ $((WEEK_NUMBER % 2)) -ne 0 ]; then
-            echo "Skipping - not a sprint end week (week ${WEEK_NUMBER})"
-            echo "skip=true" >> $GITHUB_OUTPUT
+          # Fetch all tags and branches
+          git fetch --tags
+          git fetch origin 'refs/heads/hotfix/*:refs/remotes/origin/hotfix/*' 2>/dev/null || true
+
+          # Determine release type
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            # Bi-weekly check
+            WEEK=$(date +%V)
+            if [[ $((WEEK % 2)) -ne 0 ]]; then
+              echo "skip=true" >> $GITHUB_OUTPUT
+              echo "Skipping: not a sprint week (week ${WEEK})"
+              exit 0
+            fi
+            TYPE="sprint"
+            SOURCE="main"
+            SPRINT_NUM=""
           else
-            echo "Sprint end week (week ${WEEK_NUMBER}) - proceeding"
-            echo "skip=false" >> $GITHUB_OUTPUT
+            TYPE="${{ inputs.type }}"
+            SOURCE="${{ inputs.source }}"
+            SPRINT_NUM="${{ inputs.sprint }}"
           fi
 
-      - name: Validate and prepare
-        id: prepare
-        if: github.event_name != 'schedule' || steps.check-schedule.outputs.skip != 'true'
-        run: |
-          # Determine if this is a scheduled run or manual
-          if [ "${{ github.event_name }}" == "schedule" ]; then
-            # Scheduled run - calculate sprint number based on date
-            # Sprint number = weeks since epoch / 2 (bi-weekly sprints)
-            WEEKS_SINCE_EPOCH=$(( $(date +%s) / 604800 ))
-            SPRINT=$((WEEKS_SINCE_EPOCH / 2))
-            RELEASE_TYPE="sprint"
-            echo "Scheduled sprint release: Sprint ${SPRINT}"
-          else
-            RELEASE_TYPE="${{ inputs.release-type }}"
-            SPRINT="${{ inputs.sprint-number }}"
-          fi
+          echo "Release type: ${TYPE}"
 
-          echo "release-type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
-          echo "sprint-number=${SPRINT}" >> $GITHUB_OUTPUT
+          # =====================================================
+          # AUTO-CALCULATE VERSION
+          # =====================================================
+          if [[ "$TYPE" == "sprint" ]]; then
+            # SPRINT: Find last sprint tag (v*.*.0) and increment minor
+            LAST_SPRINT_TAG=$(git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -1)
 
-          if [ "$RELEASE_TYPE" == "sprint" ]; then
-            # Sprint release from main
-            TAG_NAME="v1.${SPRINT}.0"
-            VERSION="1.${SPRINT}.0"
-            REF="main"
-
-            # Check if tag already exists
-            if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
-              echo "::error::Tag ${TAG_NAME} already exists!"
-              exit 1
+            if [[ -z "$LAST_SPRINT_TAG" ]]; then
+              VERSION="1.1.0"
+              SPRINT_NUM="1"
+              echo "No previous sprint found, starting at ${VERSION}"
+            else
+              LAST_VERSION="${LAST_SPRINT_TAG#v}"
+              MAJOR=$(echo "$LAST_VERSION" | cut -d. -f1)
+              MINOR=$(echo "$LAST_VERSION" | cut -d. -f2)
+              NEW_MINOR=$((MINOR + 1))
+              VERSION="${MAJOR}.${NEW_MINOR}.0"
+              SPRINT_NUM="${NEW_MINOR}"
+              echo "Last sprint: ${LAST_SPRINT_TAG} → New: v${VERSION}"
             fi
+            SOURCE="main"
 
           else
-            # Hotfix release
-            HOTFIX_NUM="${{ inputs.hotfix-number }}"
-            BASE_TAG="${{ inputs.base-tag }}"
-            HOTFIX_BRANCH="${{ inputs.hotfix-branch }}"
+            # HOTFIX: Use sprint number to find base tag and hotfix branch
 
-            # Validate inputs
-            if [ -z "$BASE_TAG" ]; then
-              echo "::error::Base tag is required for hotfix"
-              exit 1
-            fi
-            if [ -z "$HOTFIX_BRANCH" ]; then
-              echo "::error::Hotfix branch is required"
-              exit 1
+            # If sprint number provided, use it directly
+            if [[ -n "$SPRINT_NUM" ]]; then
+              echo "Sprint number provided: ${SPRINT_NUM}"
+              MAJOR="1"
+              MINOR="${SPRINT_NUM}"
+              BASE_TAG="v${MAJOR}.${MINOR}.0"
+
+              # Verify base tag exists
+              if ! git rev-parse "${BASE_TAG}" >/dev/null 2>&1; then
+                echo "::error::Sprint ${SPRINT_NUM} tag (${BASE_TAG}) not found!"
+                echo "Available sprint tags:"
+                git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -5
+                exit 1
+              fi
+
+              # Auto-detect hotfix branch if not provided
+              if [[ -z "$SOURCE" ]]; then
+                echo "Auto-detecting hotfix branch for sprint ${SPRINT_NUM}..."
+
+                # Find all hotfix branches
+                HOTFIX_BRANCHES=$(git branch -r | grep "origin/hotfix/" | sed 's/origin\///' | tr -d ' ')
+
+                if [[ -z "$HOTFIX_BRANCHES" ]]; then
+                  echo "::error::No hotfix branches found!"
+                  exit 1
+                fi
+
+                # Find hotfix branches that are based on this sprint's tag
+                MATCHING_BRANCHES=""
+                for branch in $HOTFIX_BRANCHES; do
+                  # Check if branch is based on this sprint's tag
+                  BRANCH_BASE=$(git merge-base "origin/main" "origin/${branch}" 2>/dev/null || echo "")
+                  if [[ -n "$BRANCH_BASE" ]]; then
+                    BRANCH_TAG=$(git describe --tags --abbrev=0 "$BRANCH_BASE" 2>/dev/null || echo "")
+                    if [[ "$BRANCH_TAG" == "$BASE_TAG" ]] || [[ "$BRANCH_TAG" == v${MAJOR}.${MINOR}.* ]]; then
+                      MATCHING_BRANCHES="${MATCHING_BRANCHES} ${branch}"
+                    fi
+                  fi
+                done
+
+                # Trim whitespace
+                MATCHING_BRANCHES=$(echo "$MATCHING_BRANCHES" | xargs)
+
+                if [[ -z "$MATCHING_BRANCHES" ]]; then
+                  # Fallback: list all hotfix branches
+                  echo "::warning::Could not auto-detect branch for sprint ${SPRINT_NUM}"
+                  echo "Available hotfix branches:"
+                  echo "$HOTFIX_BRANCHES"
+                  echo ""
+                  echo "::error::Please specify the source branch manually"
+                  exit 1
+                fi
+
+                # Count matching branches
+                BRANCH_COUNT=$(echo "$MATCHING_BRANCHES" | wc -w | tr -d ' ')
+
+                if [[ "$BRANCH_COUNT" -eq 1 ]]; then
+                  SOURCE="$MATCHING_BRANCHES"
+                  echo "Auto-detected hotfix branch: ${SOURCE}"
+                else
+                  echo "::error::Multiple hotfix branches found for sprint ${SPRINT_NUM}:"
+                  echo "$MATCHING_BRANCHES"
+                  echo ""
+                  echo "Please specify the source branch manually"
+                  exit 1
+                fi
+              fi
+
+            else
+              # No sprint number - need source branch
+              if [[ -z "$SOURCE" ]]; then
+                echo "::error::For hotfix, provide either sprint number or source branch"
+                echo ""
+                echo "Available hotfix branches:"
+                git branch -r | grep "origin/hotfix/" | sed 's/origin\///' || echo "  (none)"
+                exit 1
+              fi
+
+              # Validate source branch exists
+              if ! git ls-remote --exit-code --heads origin "${SOURCE}" >/dev/null 2>&1; then
+                echo "::error::Hotfix branch '${SOURCE}' not found!"
+                exit 1
+              fi
+
+              # Find base tag from branch
+              MERGE_BASE=$(git merge-base origin/main "origin/${SOURCE}" 2>/dev/null || echo "")
+              if [[ -n "$MERGE_BASE" ]]; then
+                BASE_TAG=$(git describe --tags --abbrev=0 "$MERGE_BASE" 2>/dev/null || echo "")
+              fi
+
+              if [[ -z "$BASE_TAG" ]]; then
+                BASE_TAG=$(git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -1)
+              fi
+
+              if [[ -z "$BASE_TAG" ]]; then
+                echo "::error::Cannot determine base sprint version for hotfix"
+                exit 1
+              fi
+
+              BASE_VERSION="${BASE_TAG#v}"
+              MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+              MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+              SPRINT_NUM="${MINOR}"
             fi
 
-            # Verify base tag exists
-            if ! git rev-parse "${BASE_TAG}" >/dev/null 2>&1; then
-              echo "::error::Base tag ${BASE_TAG} does not exist!"
-              exit 1
-            fi
+            echo "Hotfix for Sprint: ${SPRINT_NUM}"
+            echo "Base tag: ${BASE_TAG}"
+            echo "Source branch: ${SOURCE}"
 
-            # Verify hotfix branch exists
-            if ! git ls-remote --exit-code --heads origin "${HOTFIX_BRANCH}" >/dev/null 2>&1; then
-              echo "::error::Hotfix branch ${HOTFIX_BRANCH} does not exist!"
-              exit 1
-            fi
+            # Find latest patch for this sprint
+            LAST_PATCH_TAG=$(git tag -l "v${MAJOR}.${MINOR}.*" | sort -V | tail -1)
+            LAST_PATCH=$(echo "${LAST_PATCH_TAG#v}" | cut -d. -f3)
 
-            TAG_NAME="v1.${SPRINT}.${HOTFIX_NUM}"
-            VERSION="1.${SPRINT}.${HOTFIX_NUM}"
-            REF="${HOTFIX_BRANCH}"
-
-            # Check if tag already exists
-            if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
-              echo "::error::Tag ${TAG_NAME} already exists! Increment hotfix number."
-              exit 1
-            fi
+            # Increment patch
+            NEW_PATCH=$((LAST_PATCH + 1))
+            VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "Last patch: ${LAST_PATCH_TAG} → New: v${VERSION}"
           fi
 
-          ARTIFACT_NAME="calculator-${VERSION}"
+          TAG="v${VERSION}"
 
+          # Validate tag doesn't exist
+          if git rev-parse "${TAG}" >/dev/null 2>&1; then
+            echo "::error::Tag ${TAG} already exists!"
+            exit 1
+          fi
+
+          # Validate source branch exists
+          if ! git ls-remote --exit-code --heads origin "${SOURCE}" >/dev/null 2>&1; then
+            echo "::error::Branch ${SOURCE} not found!"
+            exit 1
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-          echo "ref=${REF}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "source=${SOURCE}" >> $GITHUB_OUTPUT
+          echo "type=${TYPE}" >> $GITHUB_OUTPUT
 
           # Summary
           echo "## Release Configuration" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Trigger | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Type | ${RELEASE_TYPE} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tag | ${TAG_NAME} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Source | ${REF} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Artifact | ${ARTIFACT_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Type | ${TYPE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Sprint | **${SPRINT_NUM}** |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | **${VERSION}** (auto-calculated) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | ${TAG} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | ${SOURCE} |" >> $GITHUB_STEP_SUMMARY
+          if [[ "$TYPE" == "hotfix" ]]; then
+            echo "| Base | ${BASE_TAG} |" >> $GITHUB_STEP_SUMMARY
+          fi
 
-  # ---------------------------------------------------------------------------
-  # Build
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # BUILD
+  # ===========================================================================
   build:
     name: Build
     needs: prepare
     if: needs.prepare.outputs.skip != 'true'
-    uses: ./.github/workflows/build.yml
-    with:
-      version: ${{ needs.prepare.outputs.version }}
-      is-release: true
-      ref: ${{ needs.prepare.outputs.ref }}
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.build.outputs.artifact-name }}
 
-  # ---------------------------------------------------------------------------
-  # Create tag
-  # ---------------------------------------------------------------------------
-  create-tag:
-    name: Create Tag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build & Test
+        id: build
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          ARTIFACT="app-${VERSION}"
+
+          dotnet restore
+          dotnet build -c Release -p:Version=${VERSION}
+          dotnet test -c Release --no-build
+          dotnet publish src/Calculator/Calculator.csproj -c Release --no-build -o ./publish
+
+          # Build info
+          cat > ./publish/build-info.json << EOF
+          {
+            "version": "${VERSION}",
+            "tag": "${{ needs.prepare.outputs.tag }}",
+            "type": "${{ needs.prepare.outputs.type }}",
+            "commit": "${{ github.sha }}",
+            "source": "${{ needs.prepare.outputs.source }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
+
+          echo "artifact-name=${ARTIFACT}" >> $GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.artifact-name }}
+          path: ./publish
+
+  # ===========================================================================
+  # CREATE RELEASE
+  # ===========================================================================
+  release:
+    name: Create Release
     needs: [prepare, build]
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.ref }}
+          ref: ${{ needs.prepare.outputs.source }}
           fetch-depth: 0
 
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          COMMIT_SHA=$(git rev-parse HEAD)
-          RELEASE_TYPE="${{ needs.prepare.outputs.release-type }}"
-          SPRINT="${{ needs.prepare.outputs.sprint-number }}"
-
-          if [ "$RELEASE_TYPE" == "sprint" ]; then
-            TAG_MESSAGE="Sprint ${SPRINT} Release
-
-          Version: ${{ needs.prepare.outputs.version }}
-          Date: $(date -u +%Y-%m-%d)
-          Commit: ${COMMIT_SHA}
-
-          ${{ inputs.release-notes || 'No release notes provided.' }}"
-          else
-            TAG_MESSAGE="Hotfix for Sprint ${SPRINT}
-
-          Version: ${{ needs.prepare.outputs.version }}
-          Hotfix: #${{ inputs.hotfix-number }}
-          Base: ${{ inputs.base-tag }}
-          Branch: ${{ inputs.hotfix-branch }}
-          Date: $(date -u +%Y-%m-%d)
-          Commit: ${COMMIT_SHA}
-
-          ${{ inputs.release-notes || 'No release notes provided.' }}"
-          fi
-
-          git tag -a "${{ needs.prepare.outputs.tag-name }}" -m "${TAG_MESSAGE}"
-          git push origin "${{ needs.prepare.outputs.tag-name }}"
-
-          echo "✅ Created tag: ${{ needs.prepare.outputs.tag-name }}"
-
-  # ---------------------------------------------------------------------------
-  # Create GitHub Release (store artifact)
-  # ---------------------------------------------------------------------------
-  create-release:
-    name: Create GitHub Release
-    needs: [prepare, build, create-tag]
-    if: needs.prepare.outputs.skip != 'true'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.ref }}
-          fetch-depth: 0
-
-      - name: Download build artifact
+      - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.artifact-name }}
-          path: ./release-artifact
+          path: ./release
 
-      - name: Zip artifact for release
+      - name: Create tag
         run: |
-          cd release-artifact
-          zip -r ../artifact.zip .
-          echo "Artifact size: $(du -h ../artifact.zip | cut -f1)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.prepare.outputs.tag }}" -m "${{ needs.prepare.outputs.type }} release ${{ needs.prepare.outputs.version }}"
+          git push origin "${{ needs.prepare.outputs.tag }}"
+
+      - name: Zip artifact
+        run: |
+          cd release && zip -r ../artifact.zip .
 
       - name: Generate changelog
         id: changelog
         run: |
           LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          if [ -n "$LAST_TAG" ]; then
-            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          if [[ -n "$LAST_TAG" ]]; then
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges | head -20)
           else
-            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges -10)
           fi
           echo "commits<<EOF" >> $GITHUB_OUTPUT
           echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Create release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ needs.prepare.outputs.tag-name }}
-          name: "${{ needs.prepare.outputs.release-type == 'sprint' && format('Sprint {0}', needs.prepare.outputs.sprint-number) || format('Hotfix {0}.{1}', needs.prepare.outputs.sprint-number, inputs.hotfix-number) }}"
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: "${{ needs.prepare.outputs.type == 'sprint' && 'Sprint' || 'Hotfix' }} ${{ needs.prepare.outputs.version }}"
           files: artifact.zip
           body: |
-            ## ${{ needs.prepare.outputs.release-type == 'sprint' && 'Sprint Release' || 'Hotfix Release' }}
+            ## ${{ needs.prepare.outputs.type == 'sprint' && 'Sprint Release' || 'Hotfix Release' }}
 
             **Version:** ${{ needs.prepare.outputs.version }}
-            **Tag:** ${{ needs.prepare.outputs.tag-name }}
-            ${{ needs.prepare.outputs.release-type == 'hotfix' && format('**Base:** {0}', inputs.base-tag) || '' }}
+            **Source:** ${{ needs.prepare.outputs.source }}
 
-            ### Release Notes
-            ${{ inputs.release-notes || 'No release notes provided.' }}
+            ### Notes
+            ${{ inputs.notes || 'No release notes provided.' }}
 
             ### Changes
             ${{ steps.changelog.outputs.commits }}
 
-            ### Deployment
-            Use the **Deploy** workflow to deploy this release to any environment:
-            - `deploy.yml` → Select tag `${{ needs.prepare.outputs.tag-name }}` → Choose environment
+            ---
+            **Deploy:** Run `Deploy` workflow with tag `${{ needs.prepare.outputs.tag }}`
 
-            ### Artifact
-            Download `artifact.zip` to deploy manually.
-
-  # ---------------------------------------------------------------------------
-  # Summary
-  # ---------------------------------------------------------------------------
+  # ===========================================================================
+  # SUMMARY
+  # ===========================================================================
   summary:
-    name: Release Summary
-    needs: [prepare, build, create-tag, create-release]
-    runs-on: ubuntu-latest
+    name: Summary
+    needs: [prepare, build, release]
     if: always()
+    runs-on: ubuntu-latest
 
     steps:
       - name: Generate summary
         run: |
-          if [ "${{ needs.prepare.outputs.skip }}" == "true" ]; then
-            echo "## ⏭️ Release Skipped" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Not a sprint end week (bi-weekly schedule)." >> $GITHUB_STEP_SUMMARY
-            echo "Next sprint release will run on the next even week." >> $GITHUB_STEP_SUMMARY
+          if [[ "${{ needs.prepare.outputs.skip }}" == "true" ]]; then
+            echo "## Release Skipped" >> $GITHUB_STEP_SUMMARY
+            echo "Not a sprint week." >> $GITHUB_STEP_SUMMARY
           else
-            echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
+            echo "## Release Complete" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Type:** ${{ needs.prepare.outputs.release-type }}" >> $GITHUB_STEP_SUMMARY
-            echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-            echo "**Tag:** ${{ needs.prepare.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
+            echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Tag | ${{ needs.prepare.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Version | ${{ needs.prepare.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Type | ${{ needs.prepare.outputs.type }} |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Pipeline Status" >> $GITHUB_STEP_SUMMARY
-            echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-            echo "Run **Deploy** workflow to deploy \`${{ needs.prepare.outputs.tag-name }}\` to any environment" >> $GITHUB_STEP_SUMMARY
+            echo "**Next:** Run Deploy workflow to deploy to Stage/Prod" >> $GITHUB_STEP_SUMMARY
           fi
