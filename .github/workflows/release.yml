@@ -40,6 +40,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: release
@@ -331,54 +332,27 @@ jobs:
             **Deploy:** Run `Deploy` workflow with tag `${{ needs.prepare.outputs.tag }}`
 
   # ===========================================================================
-  # AUTO-DEPLOY TO STAGE
+  # TRIGGER STAGE DEPLOYMENT
   # ===========================================================================
   deploy-stage:
-    name: Deploy to Stage
+    name: Trigger Stage Deploy
     needs: [prepare, build, release]
     if: needs.prepare.outputs.skip != 'true'
     runs-on: ubuntu-latest
-    environment:
-      name: stage
-      url: https://stage.example.com
 
     steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: ./deploy
-
-      - name: Deploy to Stage
+      - name: Trigger deploy workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "============================================"
-          echo "  AUTO-DEPLOYING TO STAGE"
-          echo "============================================"
-          echo ""
-          echo "Tag:     ${{ needs.prepare.outputs.tag }}"
-          echo "Version: ${{ needs.prepare.outputs.version }}"
-          echo "Type:    ${{ needs.prepare.outputs.type }}"
-          echo ""
-          cat ./deploy/build-info.json
-          echo ""
-          echo "--------------------------------------------"
-          echo "Running deployment script..."
-          echo "--------------------------------------------"
-          # =============================================
-          # DUMMY DEPLOYMENT - Replace with actual deploy
-          # Example for Azure App Service:
-          # az webapp deploy --resource-group $RG --name $APP_STAGE --src-path ./deploy
-          # =============================================
-          sleep 2
-          echo "Stage deployment successful!"
+          echo "Triggering deploy.yml for stage..."
+          gh workflow run deploy.yml \
+            --repo ${{ github.repository }} \
+            -f tag=${{ needs.prepare.outputs.tag }} \
+            -f environment=stage
 
-      - name: Smoke test
-        run: |
-          echo "Running smoke tests for stage..."
-          # Add actual smoke tests
-          # Example: curl -f https://stage.example.com/health
-          sleep 1
-          echo "Smoke tests passed!"
+          echo "Deploy workflow triggered for stage"
+          echo "View at: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/deploy.yml"
 
   # ===========================================================================
   # SUMMARY
@@ -403,7 +377,7 @@ jobs:
             echo "| Tag | ${{ needs.prepare.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Version | ${{ needs.prepare.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Type | ${{ needs.prepare.outputs.type }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Stage Deploy | ${{ needs.deploy-stage.result == 'success' && 'Success' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Stage Deploy | Triggered (see Deploy workflow) |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Next:** Test on Stage, then run Deploy workflow for Prod" >> $GITHUB_STEP_SUMMARY
           fi

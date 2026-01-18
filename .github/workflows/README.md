@@ -223,7 +223,7 @@ Hotfix Release:
 | `prepare` | Calculate version, validate inputs |
 | `build` | Build & test application |
 | `release` | Create tag and GitHub Release |
-| `deploy-stage` | Auto-deploy to Stage environment |
+| `deploy-stage` | Trigger Deploy workflow for Stage |
 | `summary` | Generate pipeline summary |
 
 **Outputs:**
