@@ -176,11 +176,68 @@ jobs:
           echo "✅ Updated 'prod' tag to point to ${TAG}"
 
   # ---------------------------------------------------------------------------
+  # Update GitHub Release with deployment status
+  # ---------------------------------------------------------------------------
+  update-release:
+    name: Update Release Status
+    needs: [validate, deploy]
+    if: needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Update GitHub Release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.validate.outputs.tag }}"
+          ENV="${{ inputs.environment }}"
+          ACTOR="${{ github.actor }}"
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+
+          # Get current release body
+          CURRENT_BODY=$(gh release view "${TAG}" --repo ${{ github.repository }} --json body --jq '.body')
+
+          # Create deployment status line
+          DEPLOY_LINE="| ${ENV} | ✅ ${ACTOR} @ ${TIMESTAMP} |"
+
+          # Check if deployment status table exists
+          if echo "$CURRENT_BODY" | grep -q "### Deployment Status"; then
+            # Check if this environment is already in the table
+            if echo "$CURRENT_BODY" | grep -q "| ${ENV} |"; then
+              # Replace existing line for this environment
+              NEW_BODY=$(echo "$CURRENT_BODY" | awk -v env="${ENV}" -v line="${DEPLOY_LINE}" '
+                /\| '"${ENV}"' \|/ { print line; next }
+                { print }
+              ')
+            else
+              # Add new row to existing table (after the header row)
+              NEW_BODY=$(echo "$CURRENT_BODY" | awk -v line="${DEPLOY_LINE}" '
+                /\|----------/ { print; print line; next }
+                { print }
+              ')
+            fi
+          else
+            # Add new deployment status section at the end
+            NEW_BODY="${CURRENT_BODY}
+
+### Deployment Status
+| Environment | Status |
+|-------------|--------|
+${DEPLOY_LINE}"
+          fi
+
+          # Update the release
+          echo "$NEW_BODY" > /tmp/release-body.md
+          gh release edit "${TAG}" --repo ${{ github.repository }} --notes-file /tmp/release-body.md
+
+          echo "✅ Updated release ${TAG} with ${ENV} deployment status"
+
+  # ---------------------------------------------------------------------------
   # Summary
   # ---------------------------------------------------------------------------
   summary:
     name: Deployment Summary
-    needs: [validate, deploy]
+    needs: [validate, deploy, update-release]
     runs-on: ubuntu-latest
     if: always()
 
