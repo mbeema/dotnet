@@ -23,11 +23,11 @@ on:
           - sprint
           - hotfix
       sprint-number:
-        description: 'Sprint: number (optional, auto-increments from last tag if not provided)'
+        description: 'Sprint number (optional, auto-increments from last tag if not provided)'
         required: false
         type: string
       hotfix-branch:
-        description: 'Hotfix: branch name (REQUIRED, e.g., hotfix/INC123-fix-login)'
+        description: 'Hotfix branch (required only if type=hotfix, e.g., hotfix/INC123-fix-login)'
         required: false
         type: string
       notes:
