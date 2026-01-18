@@ -196,12 +196,11 @@ Set per-environment in **Settings → Environments → [env] → Environment var
 
 **Inputs:**
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | `sprint` or `hotfix` |
-| `sprint` | No | Sprint number (for hotfix) |
-| `source` | No | Source branch (auto-detected) |
-| `notes` | No | Release notes |
+| Input | Sprint | Hotfix | Description |
+|-------|--------|--------|-------------|
+| `type` | Required | Required | `sprint` or `hotfix` |
+| `hotfix-branch` | - | **Required** | e.g., `hotfix/INC123-fix-login` |
+| `notes` | Optional | Optional | Release notes |
 
 **Auto-Version Calculation:**
 
@@ -429,14 +428,21 @@ Deploy:  https://github.com/{owner}/{repo}/actions/workflows/deploy.yml
 ### CLI Commands
 
 ```bash
-# Trigger workflows via CLI
+# Sprint release (everything auto-calculated)
 gh workflow run release.yml -f type=sprint
-gh workflow run release.yml -f type=hotfix -f sprint=54
-gh workflow run deploy.yml -f tag=v1.54.0 -f environment=prod -f ticket=INC123
+
+# Hotfix release (just provide branch name)
+gh workflow run release.yml -f type=hotfix -f hotfix-branch=hotfix/INC123-fix-login
+
+# Deploy to prod
+gh workflow run deploy.yml -f tag=v1.54.1 -f environment=prod -f ticket=INC123
 
 # List releases
 gh release list
 
 # View release
 gh release view v1.54.0
+
+# List hotfix branches
+git ls-remote --heads origin 'hotfix/*'
 ```

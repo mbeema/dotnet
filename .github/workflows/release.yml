@@ -22,17 +22,12 @@ on:
         options:
           - sprint
           - hotfix
-      sprint:
-        description: 'Sprint number (for hotfix only, e.g., 54 - auto-detects branch and version)'
+      hotfix-branch:
+        description: 'Hotfix branch name (REQUIRED for hotfix, e.g., hotfix/INC123-fix-login)'
         required: false
         type: string
-      source:
-        description: 'Source branch (optional - auto-detected from sprint number for hotfix)'
-        required: false
-        type: string
-        default: ''
       notes:
-        description: 'Release notes'
+        description: 'Release notes (optional)'
         required: false
         type: string
 
@@ -73,13 +68,11 @@ jobs:
       - name: Calculate version
         id: config
         run: |
-          # Fetch all tags and branches
+          # Fetch all tags
           git fetch --tags
-          git fetch origin 'refs/heads/hotfix/*:refs/remotes/origin/hotfix/*' 2>/dev/null || true
 
           # Determine release type
           if [[ "${{ github.event_name }}" == "schedule" ]]; then
-            # Bi-weekly check
             WEEK=$(date +%V)
             if [[ $((WEEK % 2)) -ne 0 ]]; then
               echo "skip=true" >> $GITHUB_OUTPUT
@@ -87,27 +80,25 @@ jobs:
               exit 0
             fi
             TYPE="sprint"
-            SOURCE="main"
-            SPRINT_NUM=""
           else
             TYPE="${{ inputs.type }}"
-            SOURCE="${{ inputs.source }}"
-            SPRINT_NUM="${{ inputs.sprint }}"
           fi
 
           echo "Release type: ${TYPE}"
 
           # =====================================================
-          # AUTO-CALCULATE VERSION
+          # SPRINT RELEASE
           # =====================================================
           if [[ "$TYPE" == "sprint" ]]; then
-            # SPRINT: Find last sprint tag (v*.*.0) and increment minor
+            SOURCE="main"
+
+            # Find last sprint tag and increment
             LAST_SPRINT_TAG=$(git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -1)
 
             if [[ -z "$LAST_SPRINT_TAG" ]]; then
               VERSION="1.1.0"
               SPRINT_NUM="1"
-              echo "No previous sprint found, starting at ${VERSION}"
+              echo "No previous sprint found, starting at v${VERSION}"
             else
               LAST_VERSION="${LAST_SPRINT_TAG#v}"
               MAJOR=$(echo "$LAST_VERSION" | cut -d. -f1)
@@ -117,128 +108,66 @@ jobs:
               SPRINT_NUM="${NEW_MINOR}"
               echo "Last sprint: ${LAST_SPRINT_TAG} → New: v${VERSION}"
             fi
-            SOURCE="main"
 
+          # =====================================================
+          # HOTFIX RELEASE
+          # =====================================================
           else
-            # HOTFIX: Use sprint number to find base tag and hotfix branch
+            SOURCE="${{ inputs.hotfix-branch }}"
 
-            # If sprint number provided, use it directly
-            if [[ -n "$SPRINT_NUM" ]]; then
-              echo "Sprint number provided: ${SPRINT_NUM}"
-              MAJOR="1"
-              MINOR="${SPRINT_NUM}"
-              BASE_TAG="v${MAJOR}.${MINOR}.0"
-
-              # Verify base tag exists
-              if ! git rev-parse "${BASE_TAG}" >/dev/null 2>&1; then
-                echo "::error::Sprint ${SPRINT_NUM} tag (${BASE_TAG}) not found!"
-                echo "Available sprint tags:"
-                git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -5
-                exit 1
-              fi
-
-              # Auto-detect hotfix branch if not provided
-              if [[ -z "$SOURCE" ]]; then
-                echo "Auto-detecting hotfix branch for sprint ${SPRINT_NUM}..."
-
-                # Find all hotfix branches
-                HOTFIX_BRANCHES=$(git branch -r | grep "origin/hotfix/" | sed 's/origin\///' | tr -d ' ')
-
-                if [[ -z "$HOTFIX_BRANCHES" ]]; then
-                  echo "::error::No hotfix branches found!"
-                  exit 1
-                fi
-
-                # Find hotfix branches that are based on this sprint's tag
-                MATCHING_BRANCHES=""
-                for branch in $HOTFIX_BRANCHES; do
-                  # Check if branch is based on this sprint's tag
-                  BRANCH_BASE=$(git merge-base "origin/main" "origin/${branch}" 2>/dev/null || echo "")
-                  if [[ -n "$BRANCH_BASE" ]]; then
-                    BRANCH_TAG=$(git describe --tags --abbrev=0 "$BRANCH_BASE" 2>/dev/null || echo "")
-                    if [[ "$BRANCH_TAG" == "$BASE_TAG" ]] || [[ "$BRANCH_TAG" == v${MAJOR}.${MINOR}.* ]]; then
-                      MATCHING_BRANCHES="${MATCHING_BRANCHES} ${branch}"
-                    fi
-                  fi
-                done
-
-                # Trim whitespace
-                MATCHING_BRANCHES=$(echo "$MATCHING_BRANCHES" | xargs)
-
-                if [[ -z "$MATCHING_BRANCHES" ]]; then
-                  # Fallback: list all hotfix branches
-                  echo "::warning::Could not auto-detect branch for sprint ${SPRINT_NUM}"
-                  echo "Available hotfix branches:"
-                  echo "$HOTFIX_BRANCHES"
-                  echo ""
-                  echo "::error::Please specify the source branch manually"
-                  exit 1
-                fi
-
-                # Count matching branches
-                BRANCH_COUNT=$(echo "$MATCHING_BRANCHES" | wc -w | tr -d ' ')
-
-                if [[ "$BRANCH_COUNT" -eq 1 ]]; then
-                  SOURCE="$MATCHING_BRANCHES"
-                  echo "Auto-detected hotfix branch: ${SOURCE}"
-                else
-                  echo "::error::Multiple hotfix branches found for sprint ${SPRINT_NUM}:"
-                  echo "$MATCHING_BRANCHES"
-                  echo ""
-                  echo "Please specify the source branch manually"
-                  exit 1
-                fi
-              fi
-
-            else
-              # No sprint number - need source branch
-              if [[ -z "$SOURCE" ]]; then
-                echo "::error::For hotfix, provide either sprint number or source branch"
-                echo ""
-                echo "Available hotfix branches:"
-                git branch -r | grep "origin/hotfix/" | sed 's/origin\///' || echo "  (none)"
-                exit 1
-              fi
-
-              # Validate source branch exists
-              if ! git ls-remote --exit-code --heads origin "${SOURCE}" >/dev/null 2>&1; then
-                echo "::error::Hotfix branch '${SOURCE}' not found!"
-                exit 1
-              fi
-
-              # Find base tag from branch
-              MERGE_BASE=$(git merge-base origin/main "origin/${SOURCE}" 2>/dev/null || echo "")
-              if [[ -n "$MERGE_BASE" ]]; then
-                BASE_TAG=$(git describe --tags --abbrev=0 "$MERGE_BASE" 2>/dev/null || echo "")
-              fi
-
-              if [[ -z "$BASE_TAG" ]]; then
-                BASE_TAG=$(git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -1)
-              fi
-
-              if [[ -z "$BASE_TAG" ]]; then
-                echo "::error::Cannot determine base sprint version for hotfix"
-                exit 1
-              fi
-
-              BASE_VERSION="${BASE_TAG#v}"
-              MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
-              MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
-              SPRINT_NUM="${MINOR}"
+            # Validate hotfix branch is provided
+            if [[ -z "$SOURCE" ]]; then
+              echo "::error::Hotfix branch is required!"
+              echo ""
+              echo "Please provide the hotfix branch name, e.g.:"
+              echo "  hotfix/INC123-fix-login"
+              echo ""
+              echo "Available hotfix branches:"
+              git ls-remote --heads origin 'hotfix/*' | sed 's/.*refs\/heads\//  /' || echo "  (none found)"
+              exit 1
             fi
 
-            echo "Hotfix for Sprint: ${SPRINT_NUM}"
-            echo "Base tag: ${BASE_TAG}"
-            echo "Source branch: ${SOURCE}"
+            # Validate branch exists
+            if ! git ls-remote --exit-code --heads origin "${SOURCE}" >/dev/null 2>&1; then
+              echo "::error::Hotfix branch '${SOURCE}' not found!"
+              echo ""
+              echo "Available hotfix branches:"
+              git ls-remote --heads origin 'hotfix/*' | sed 's/.*refs\/heads\//  /' || echo "  (none found)"
+              exit 1
+            fi
 
-            # Find latest patch for this sprint
+            # Find base tag from branch
+            git fetch origin "${SOURCE}" --depth=100 2>/dev/null || true
+            MERGE_BASE=$(git merge-base origin/main "origin/${SOURCE}" 2>/dev/null || echo "")
+
+            if [[ -n "$MERGE_BASE" ]]; then
+              BASE_TAG=$(git describe --tags --abbrev=0 "$MERGE_BASE" 2>/dev/null || echo "")
+            fi
+
+            if [[ -z "$BASE_TAG" ]]; then
+              # Fallback: use latest sprint tag
+              BASE_TAG=$(git tag -l "v*.*.*" | grep -E "^v[0-9]+\.[0-9]+\.0$" | sort -V | tail -1)
+            fi
+
+            if [[ -z "$BASE_TAG" ]]; then
+              echo "::error::Cannot determine base sprint version for hotfix"
+              exit 1
+            fi
+
+            # Extract sprint number from base tag
+            BASE_VERSION="${BASE_TAG#v}"
+            MAJOR=$(echo "$BASE_VERSION" | cut -d. -f1)
+            MINOR=$(echo "$BASE_VERSION" | cut -d. -f2)
+            SPRINT_NUM="${MINOR}"
+
+            # Find latest patch and increment
             LAST_PATCH_TAG=$(git tag -l "v${MAJOR}.${MINOR}.*" | sort -V | tail -1)
             LAST_PATCH=$(echo "${LAST_PATCH_TAG#v}" | cut -d. -f3)
-
-            # Increment patch
             NEW_PATCH=$((LAST_PATCH + 1))
             VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
-            echo "Last patch: ${LAST_PATCH_TAG} → New: v${VERSION}"
+
+            echo "Hotfix for Sprint: ${SPRINT_NUM}"
+            echo "Base tag: ${BASE_TAG} → New: v${VERSION}"
           fi
 
           TAG="v${VERSION}"
@@ -246,12 +175,6 @@ jobs:
           # Validate tag doesn't exist
           if git rev-parse "${TAG}" >/dev/null 2>&1; then
             echo "::error::Tag ${TAG} already exists!"
-            exit 1
-          fi
-
-          # Validate source branch exists
-          if ! git ls-remote --exit-code --heads origin "${SOURCE}" >/dev/null 2>&1; then
-            echo "::error::Branch ${SOURCE} not found!"
             exit 1
           fi
 
