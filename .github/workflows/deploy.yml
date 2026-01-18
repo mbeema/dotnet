@@ -236,23 +236,33 @@ jobs:
           TAG="${{ needs.validate.outputs.tag }}"
           ENV="${{ inputs.environment }}"
           TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+          ACTOR="${{ github.actor }}"
 
           CURRENT=$(gh release view "${TAG}" --repo ${{ github.repository }} --json body -q '.body')
 
           if echo "$CURRENT" | grep -q "### Deployments"; then
-            # Add to existing table
-            NEW_BODY=$(echo "$CURRENT" | sed "/### Deployments/a | ${ENV} | ${{ github.actor }} | ${TIMESTAMP} |")
+            # Add new row after the separator line (|-----|)
+            echo "$CURRENT" | awk -v env="$ENV" -v actor="$ACTOR" -v ts="$TIMESTAMP" '
+              /\|[-]+\|[-]+\|[-]+\|/ && !added {
+                print
+                print "| " env " | " actor " | " ts " |"
+                added=1
+                next
+              }
+              { print }
+            ' > /tmp/body.md
           else
-            # Create deployments section
-            NEW_BODY="${CURRENT}
-
-          ### Deployments
-          | Env | By | When |
-          |-----|-----|------|
-          | ${ENV} | ${{ github.actor }} | ${TIMESTAMP} |"
+            # Create deployments section with proper markdown table
+            {
+              echo "$CURRENT"
+              echo ""
+              echo "### Deployments"
+              echo "| Environment | Deployed By | Timestamp |"
+              echo "|-------------|-------------|-----------|"
+              echo "| ${ENV} | ${ACTOR} | ${TIMESTAMP} |"
+            } > /tmp/body.md
           fi
 
-          echo "$NEW_BODY" > /tmp/body.md
           gh release edit "${TAG}" --repo ${{ github.repository }} --notes-file /tmp/body.md
 
   # ===========================================================================
