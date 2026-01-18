@@ -65,12 +65,25 @@ jobs:
   deploy-qa:
     name: Deploy to QA
     needs: [version, build]
-    uses: ./.github/workflows/deploy.yml
-    with:
-      environment: qa
-      artifact-name: ${{ needs.build.outputs.artifact-name }}
-      version: ${{ needs.version.outputs.version }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://qa.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./deploy
+
+      - name: Deploy to QA
+        run: |
+          echo "Deploying ${{ needs.build.outputs.artifact-name }} to QA..."
+          echo "Version: ${{ needs.version.outputs.version }}"
+          cat ./deploy/build-info.json
+          # Add actual deployment commands here
+          echo "Deployment complete!"
 
   # ---------------------------------------------------------------------------
   # Summary

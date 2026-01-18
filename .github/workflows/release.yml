@@ -1,11 +1,11 @@
 # =============================================================================
-# RELEASE WORKFLOW
+# RELEASE & DEPLOY WORKFLOW
 # =============================================================================
 # Single pipeline for Sprint and Hotfix releases
-# Build once → Tag → Deploy QA → Upload to GitHub Release
+# Build once → Tag → Deploy QA → Deploy Stage → GitHub Release
 # =============================================================================
 
-name: Release
+name: Release & Deploy
 
 on:
   workflow_dispatch:
@@ -211,19 +211,58 @@ jobs:
   deploy-qa:
     name: Deploy to QA
     needs: [prepare, build, create-tag]
-    uses: ./.github/workflows/deploy.yml
-    with:
-      environment: qa
-      artifact-name: ${{ needs.build.outputs.artifact-name }}
-      version: ${{ needs.prepare.outputs.version }}
-    secrets: inherit
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://qa.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./deploy
+
+      - name: Deploy to QA
+        run: |
+          echo "Deploying ${{ needs.build.outputs.artifact-name }} to QA..."
+          echo "Version: ${{ needs.prepare.outputs.version }}"
+          cat ./deploy/build-info.json
+          # Add actual deployment commands here
+          echo "Deployment complete!"
+
+  # ---------------------------------------------------------------------------
+  # Deploy to Stage
+  # ---------------------------------------------------------------------------
+  deploy-stage:
+    name: Deploy to Stage
+    needs: [prepare, build, create-tag, deploy-qa]
+    runs-on: ubuntu-latest
+    environment:
+      name: stage
+      url: https://stage.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./deploy
+
+      - name: Deploy to Stage
+        run: |
+          echo "Deploying ${{ needs.build.outputs.artifact-name }} to Stage..."
+          echo "Version: ${{ needs.prepare.outputs.version }}"
+          cat ./deploy/build-info.json
+          # Add actual deployment commands here
+          echo "Deployment complete!"
 
   # ---------------------------------------------------------------------------
   # Create GitHub Release (store artifact)
   # ---------------------------------------------------------------------------
   create-release:
     name: Create GitHub Release
-    needs: [prepare, build, create-tag, deploy-qa]
+    needs: [prepare, build, create-tag, deploy-qa, deploy-stage]
     runs-on: ubuntu-latest
 
     steps:
@@ -279,7 +318,7 @@ jobs:
 
             ### Deployment Status
             - ✅ QA: Deployed
-            - ⏳ Stage: Run **Deploy Stage** workflow
+            - ✅ Stage: Deployed
             - ⏳ Prod: Run **Deploy Prod** workflow
 
             ### Artifact
@@ -290,7 +329,7 @@ jobs:
   # ---------------------------------------------------------------------------
   summary:
     name: Release Summary
-    needs: [prepare, build, create-tag, deploy-qa, create-release]
+    needs: [prepare, build, create-tag, deploy-qa, deploy-stage, create-release]
     runs-on: ubuntu-latest
     if: always()
 
@@ -309,9 +348,9 @@ jobs:
           echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Deploy QA | ${{ needs.deploy-qa.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Stage | ${{ needs.deploy-stage.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-          echo "1. Test in QA environment" >> $GITHUB_STEP_SUMMARY
-          echo "2. Run **Deploy Stage** workflow with tag: \`${{ needs.prepare.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "3. Run **Deploy Prod** workflow with tag: \`${{ needs.prepare.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "1. Test in Stage environment" >> $GITHUB_STEP_SUMMARY
+          echo "2. Run **Deploy Prod** workflow with tag: \`${{ needs.prepare.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY

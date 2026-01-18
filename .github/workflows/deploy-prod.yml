@@ -28,15 +28,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Download artifact from GitHub Release
-  # ---------------------------------------------------------------------------
-  download:
-    name: Download Artifact
+  deploy:
+    name: Deploy to Production
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.download.outputs.version }}
-      artifact-name: ${{ steps.download.outputs.artifact-name }}
+    environment:
+      name: prod
+      url: https://prod.example.com
 
     steps:
       - name: Validate tag exists
@@ -50,138 +47,83 @@ jobs:
           echo "✅ Release found for tag: ${{ inputs.tag }}"
 
       - name: Download artifact from GitHub Release
-        id: download
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ inputs.tag }}"
-
-          echo "Downloading artifact from release: ${TAG}"
-          gh release download "${TAG}" \
+          echo "Downloading artifact from release: ${{ inputs.tag }}"
+          gh release download "${{ inputs.tag }}" \
             --pattern "artifact.zip" \
             --repo ${{ github.repository }}
 
-          # Extract
-          unzip -o artifact.zip -d ./artifact-content
+          unzip -o artifact.zip -d ./deploy
+          echo "✅ Artifact downloaded and extracted"
 
-          # Get version from build-info.json
-          VERSION=$(jq -r '.version' ./artifact-content/build-info.json)
-          ARTIFACT_NAME="calculator-${VERSION}"
-
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-
-          echo "✅ Downloaded artifact version: ${VERSION}"
-          cat ./artifact-content/build-info.json
-
-      - name: Upload as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.download.outputs.artifact-name }}
-          path: ./artifact-content
-          retention-days: 1
-
-  # ---------------------------------------------------------------------------
-  # Pre-deployment checklist
-  # ---------------------------------------------------------------------------
-  pre-deploy:
-    name: Pre-deployment Check
-    needs: download
-    runs-on: ubuntu-latest
-
-    steps:
       - name: Pre-deployment checklist
         run: |
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
           echo "## Pre-deployment Checklist" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Tag | ✅ ${{ inputs.tag }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ✅ ${{ needs.download.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ✅ ${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Artifact | ✅ Downloaded from release |" >> $GITHUB_STEP_SUMMARY
-
           if [ -n "${{ inputs.change-ticket }}" ]; then
             echo "| Change Ticket | ✅ ${{ inputs.change-ticket }} |" >> $GITHUB_STEP_SUMMARY
           else
             echo "| Change Ticket | ⚠️ Not provided |" >> $GITHUB_STEP_SUMMARY
           fi
-
           echo "| Triggered by | ✅ ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
 
-  # ---------------------------------------------------------------------------
-  # Deploy to Production (requires environment approval)
-  # ---------------------------------------------------------------------------
-  deploy:
-    name: Deploy to Production
-    needs: [download, pre-deploy]
-    uses: ./.github/workflows/deploy.yml
-    with:
-      environment: prod
-      artifact-name: ${{ needs.download.outputs.artifact-name }}
-      version: ${{ needs.download.outputs.version }}
-    secrets: inherit
+      - name: Deploy to Production
+        run: |
+          echo "=========================================="
+          echo "  DEPLOYING TO PRODUCTION"
+          echo "=========================================="
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
+          echo "Tag     : ${{ inputs.tag }}"
+          echo "Version : ${VERSION}"
+          echo "Ticket  : ${{ inputs.change-ticket || 'N/A' }}"
+          echo ""
+          cat ./deploy/build-info.json
+          echo ""
+          # Add actual deployment commands here
+          echo "Deployment complete!"
 
-  # ---------------------------------------------------------------------------
-  # Post-deployment tasks
-  # ---------------------------------------------------------------------------
-  post-deploy:
-    name: Post-deployment Tasks
-    needs: [download, deploy]
-    if: needs.deploy.result == 'success'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
+      - name: Checkout for tagging
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Update production tag
         run: |
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Update prod tag to point to deployed release
           git tag -d prod 2>/dev/null || true
           git push origin :refs/tags/prod 2>/dev/null || true
-          git tag -a prod -m "Production: ${{ needs.download.outputs.version }}" ${{ inputs.tag }}
+          git tag -a prod -m "Production: ${VERSION}" ${{ inputs.tag }}
           git push origin prod
 
           echo "✅ Updated 'prod' tag to point to ${{ inputs.tag }}"
 
-  # ---------------------------------------------------------------------------
-  # Summary
-  # ---------------------------------------------------------------------------
-  summary:
-    name: Deployment Summary
-    needs: [download, pre-deploy, deploy, post-deploy]
-    runs-on: ubuntu-latest
-    if: always()
-
-    steps:
       - name: Generate summary
         run: |
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "## 🚀 Production Deployment Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ inputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ needs.download.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Change Ticket:** ${{ inputs.change-ticket || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Deployed by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${{ inputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Change Ticket | ${{ inputs.change-ticket || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployed by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Success |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Status" >> $GITHUB_STEP_SUMMARY
-          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Download | ${{ needs.download.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Pre-deploy | ${{ needs.pre-deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Deploy Prod | ${{ needs.deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Post-deploy | ${{ needs.post-deploy.result == 'success' && '✅ Success' || (needs.post-deploy.result == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
-
-          if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### ✅ Production deployment successful!" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Rollback:** Run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "**Rollback:** Run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
 
           # Cherry-pick reminder for hotfixes
           if [[ "${{ inputs.tag }}" == hotfix-* ]]; then

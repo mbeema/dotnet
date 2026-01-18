@@ -8,13 +8,11 @@ Trunk-based development with 2-week sprints. Build once, deploy to all environme
 
 ```
 workflows/
-├── build.yml               # Reusable: Build & test
-├── deploy.yml              # Reusable: Deploy to environment
-├── pr-validation.yml       # PR checks
-├── ci-cd.yml              # Merge to main → QA (automatic)
-├── release.yml            # Sprint/Hotfix → Build → Tag → QA → GitHub Release
-├── deploy-stage.yml       # Download → Stage
-├── deploy-prod.yml        # Download → Prod (with approval)
+├── build.yml                 # Reusable: Build & test
+├── pr-validation.yml         # PR checks
+├── ci-cd.yml                # Merge to main → QA (automatic)
+├── release.yml              # Sprint/Hotfix → Build → Tag → QA → Stage → GitHub Release
+├── deploy-prod.yml          # Download → Prod (with approval)
 └── create-hotfix-branch.yml # Create hotfix branch from tag
 ```
 
@@ -39,7 +37,7 @@ workflows/
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    RELEASE (Manual - Sprint End)                         │
+│                    RELEASE & DEPLOY (Manual - Sprint End)                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
 │   release.yml (type: sprint)                                             │
@@ -47,19 +45,8 @@ workflows/
 │        ├───► Build from main                                             │
 │        ├───► Create tag: main-sprint-54                                  │
 │        ├───► Deploy QA                                                   │
+│        ├───► Deploy Stage                                                │
 │        └───► Upload artifact.zip to GitHub Release                       │
-│                                                                          │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-                                     ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    DEPLOY STAGE (Manual)                                 │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│   deploy-stage.yml                                                       │
-│        │                                                                 │
-│        ├───► Download artifact.zip from GitHub Release                   │
-│        └───► Deploy Stage (same artifact)                                │
 │                                                                          │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │
@@ -154,8 +141,7 @@ Production Bug Found (running main-sprint-54)
 | `pr-validation.yml` | PR to main | Build, test, security |
 | `ci-cd.yml` | Push to main | Build → QA (automatic) |
 | `create-hotfix-branch.yml` | Manual | Create hotfix branch from tag |
-| `release.yml` | Manual | Sprint or Hotfix release |
-| `deploy-stage.yml` | Manual | Download → Stage |
+| `release.yml` | Manual | Sprint/Hotfix → QA → Stage |
 | `deploy-prod.yml` | Manual | Download → Prod |
 
 ## Build Once, Deploy All
@@ -226,12 +212,6 @@ Actions → Release → Run workflow
 ├── hotfix-number: 1
 ├── base-tag: main-sprint-54
 └── hotfix-branch: hotfix/INC001234-fix-login-bug
-```
-
-### Deploy to Stage
-```
-Actions → Deploy Stage → Run workflow
-└── tag: main-sprint-54
 ```
 
 ### Deploy to Prod
