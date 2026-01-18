@@ -1,0 +1,120 @@
+# =============================================================================
+# DEPLOY TO STAGE
+# =============================================================================
+# Downloads artifact from GitHub Release and deploys to Stage
+# =============================================================================
+
+name: Deploy Stage
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to deploy (e.g., main-sprint-54 or hotfix-sprint-54-1)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-stage
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Download artifact from GitHub Release
+  # ---------------------------------------------------------------------------
+  download:
+    name: Download Artifact
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.download.outputs.version }}
+      artifact-name: ${{ steps.download.outputs.artifact-name }}
+
+    steps:
+      - name: Validate tag exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${{ inputs.tag }}" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "::error::Release for tag '${{ inputs.tag }}' not found!"
+            exit 1
+          fi
+          echo "✅ Release found for tag: ${{ inputs.tag }}"
+
+      - name: Download artifact from GitHub Release
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag }}"
+
+          echo "Downloading artifact from release: ${TAG}"
+          gh release download "${TAG}" \
+            --pattern "artifact.zip" \
+            --repo ${{ github.repository }}
+
+          # Extract
+          unzip -o artifact.zip -d ./artifact-content
+
+          # Get version from build-info.json
+          VERSION=$(jq -r '.version' ./artifact-content/build-info.json)
+          ARTIFACT_NAME="calculator-${VERSION}"
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+
+          echo "✅ Downloaded artifact version: ${VERSION}"
+          cat ./artifact-content/build-info.json
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.download.outputs.artifact-name }}
+          path: ./artifact-content
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Deploy to Stage
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Stage
+    needs: download
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: stage
+      artifact-name: ${{ needs.download.outputs.artifact-name }}
+      version: ${{ needs.download.outputs.version }}
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Summary
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Deployment Summary
+    needs: [download, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## 🚀 Stage Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ inputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.download.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Download | ${{ needs.download.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy Stage | ${{ needs.deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "### ✅ Deployed to Stage successfully!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Next:** Run **Deploy Prod** workflow with tag: \`${{ inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          fi

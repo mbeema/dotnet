@@ -2,7 +2,7 @@
 
 ## Overview
 
-Trunk-based development with 2-week sprints ending on Tuesdays.
+Trunk-based development with 2-week sprints. Build once, deploy to all environments.
 
 ## Pipeline Architecture
 
@@ -11,177 +11,219 @@ workflows/
 ├── build.yml           # Reusable: Build & test
 ├── deploy.yml          # Reusable: Deploy to environment
 ├── pr-validation.yml   # PR checks
-├── ci-cd.yml          # Main branch → QA
-├── release.yml        # Sprint + Production (unified)
-└── hotfix.yml         # Emergency fixes
+├── ci-cd.yml          # Merge to main → QA (automatic)
+├── release.yml        # Sprint/Hotfix → Build → Tag → QA → GitHub Release
+├── deploy-stage.yml   # Download → Stage
+└── deploy-prod.yml    # Download → Prod (with approval)
 ```
 
 ## Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         DEVELOPMENT                                  │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   Feature Branch ──► PR ──► pr-validation.yml ──► Review ──► Merge  │
-│                              (build, test, security)                 │
-│                                                                      │
-└──────────────────────────────────┬──────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         CONTINUOUS INTEGRATION                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   Push to main ──► ci-cd.yml ──► Build ──► Deploy QA (automatic)    │
-│                                                                      │
-└──────────────────────────────────┬──────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         SPRINT RELEASE (Tuesday)                     │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   release.yml (type: sprint)                                         │
-│        │                                                             │
-│        ├──► Create Tag (sprint-25.02)                               │
-│        ├──► Build                                                    │
-│        ├──► Deploy QA                                                │
-│        ├──► Deploy STAGE                                             │
-│        └──► Create GitHub Release                                    │
-│                                                                      │
-└──────────────────────────────────┬──────────────────────────────────┘
-                                   │
-                                   ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         PRODUCTION RELEASE (Monthly)                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   release.yml (type: production)                                     │
-│        │                                                             │
-│        ├──► Select existing tag (sprint-25.02)                      │
-│        ├──► Pre-deployment checklist                                 │
-│        ├──► ⏸️  APPROVAL GATE                                        │
-│        ├──► Deploy PROD (same artifact)                             │
-│        └──► Update prod tag                                          │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              DEVELOPMENT                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   Feature Branch ───► PR ───► pr-validation.yml ───► Merge to main      │
+│                                                                          │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         CI/CD (Automatic)                                │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   Push to main ───► ci-cd.yml ───► Build ───► Deploy QA                 │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                         HOTFIX (Emergency)                           │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   hotfix.yml                                                         │
-│        │                                                             │
-│        ├──► Build & Tag (hotfix-YYYYMMDD.N)                         │
-│        ├──► Deploy QA                                                │
-│        ├──► ⏸️  QA Validation                                        │
-│        ├──► Deploy STAGE (can skip for Critical)                    │
-│        └──► Deploy PROD                                              │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    RELEASE (Manual - Sprint End)                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   release.yml (type: sprint)                                             │
+│        │                                                                 │
+│        ├───► Build from main                                             │
+│        ├───► Create tag: main-sprint-54                                  │
+│        ├───► Deploy QA                                                   │
+│        └───► Upload artifact.zip to GitHub Release                       │
+│                                                                          │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DEPLOY STAGE (Manual)                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   deploy-stage.yml                                                       │
+│        │                                                                 │
+│        ├───► Download artifact.zip from GitHub Release                   │
+│        └───► Deploy Stage (same artifact)                                │
+│                                                                          │
+└────────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    DEPLOY PROD (Manual + Approval)                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   deploy-prod.yml                                                        │
+│        │                                                                 │
+│        ├───► Download artifact.zip from GitHub Release                   │
+│        ├───► ⏸️ Environment Approval                                     │
+│        ├───► Deploy Prod (same artifact)                                 │
+│        └───► Update 'prod' tag                                           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Hotfix Flow
+
+```
+Production Bug Found (running main-sprint-54)
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 1. Create hotfix branch from tag    │
+│    git checkout -b hotfix/INC001 main-sprint-54
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 2. Fix, commit, push                │
+│    git push -u origin hotfix/INC001 │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 3. Run Release workflow             │
+│    type: hotfix                     │
+│    sprint-number: 54                │
+│    hotfix-number: 1                 │
+│    base-tag: main-sprint-54         │
+│    hotfix-branch: hotfix/INC001     │
+└─────────────────────────────────────┘
+         │
+         ├───► Build from hotfix branch
+         ├───► Create tag: hotfix-sprint-54-1
+         ├───► Deploy QA
+         └───► GitHub Release
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 4. Deploy Stage                     │
+│    tag: hotfix-sprint-54-1          │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 5. Deploy Prod                      │
+│    tag: hotfix-sprint-54-1          │
+└─────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│ 6. Cherry-pick to main              │
+│    git checkout main                │
+│    git cherry-pick <sha>            │
+│    git push                         │
+└─────────────────────────────────────┘
+```
+
+## Tag Naming
+
+| Type | Format | Example |
+|------|--------|---------|
+| Sprint | `main-sprint-{number}` | `main-sprint-54` |
+| Hotfix | `hotfix-sprint-{sprint}-{hotfix}` | `hotfix-sprint-54-1` |
+| Production | `prod` | Points to current prod release |
 
 ## Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `pr-validation.yml` | PR to main | Build, test, security scan |
-| `ci-cd.yml` | Push to main | Build → Deploy QA |
-| `release.yml` | Manual | Sprint release OR Production release |
-| `hotfix.yml` | Manual | Emergency production fixes |
-
-## Release Workflow Usage
-
-### Sprint Release (Every Tuesday)
-```
-Actions → Release → Run workflow
-├── release-type: sprint
-├── sprint-number: 25.02
-└── release-notes: (optional)
-```
-
-### Production Release (Monthly)
-```
-Actions → Release → Run workflow
-├── release-type: production
-├── tag: sprint-25.02
-└── change-ticket: CHG0012345 (optional)
-```
-
-## Environments
-
-| Environment | Auto-deploy | Approval Required |
-|-------------|-------------|-------------------|
-| QA | Yes (on merge) | No |
-| Stage | Sprint release | No |
-| Prod | Production release | Yes |
-
-### GitHub Setup
-
-1. Go to **Settings → Environments**
-2. Create: `qa`, `stage`, `prod`, `qa-validation`
-3. For `prod`: Add required reviewers
-
-## Versioning
-
-| Type | Format | Example |
-|------|--------|---------|
-| CI Build | `1.0.{run}` | `1.0.42` |
-| Sprint | `1.0.0-sprint.{YY.SS}` | `1.0.0-sprint.25.02` |
-| Hotfix | `1.0.0-hotfix.{YYYYMMDD}.{N}` | `1.0.0-hotfix.20250115.1` |
-
-## Tags
-
-| Tag | Purpose |
-|-----|---------|
-| `sprint-YY.SS` | Sprint release point |
-| `hotfix-YYYYMMDD.N` | Hotfix release point |
-| `prod` | Current production (moves) |
+| `pr-validation.yml` | PR to main | Build, test, security |
+| `ci-cd.yml` | Push to main | Build → QA (automatic) |
+| `release.yml` | Manual | Sprint or Hotfix release |
+| `deploy-stage.yml` | Manual | Download → Stage |
+| `deploy-prod.yml` | Manual | Download → Prod |
 
 ## Build Once, Deploy All
 
 ```
-Build creates artifact
-       │
-       ▼
-┌─────────────────────────────────────────┐
-│  calculator-1.0.0-sprint.25.02          │
-│  ├── Calculator.dll                     │
-│  ├── build-info.json  ◄── metadata      │
-│  └── ...                                │
-└─────────────────────────────────────────┘
-       │
-       ├──► QA    (same artifact)
-       ├──► Stage (same artifact)
-       └──► Prod  (same artifact)
+Release Workflow (Sprint or Hotfix)
+         │
+         ▼
+┌─────────────────────┐
+│       BUILD         │ ← Runs once
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│    GitHub Release   │ ← artifact.zip stored
+│    + artifact.zip   │
+└─────────────────────┘
+         │
+         ├───► QA    (deploy in release workflow)
+         │
+         ▼
+┌─────────────────────┐
+│   deploy-stage.yml  │ ← Downloads same artifact.zip
+└─────────────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│   deploy-prod.yml   │ ← Downloads same artifact.zip
+└─────────────────────┘
 ```
 
-## Sprint Calendar
+## Environment Setup
 
-```
-Week 1
-├── Mon: Sprint starts
-├── Tue-Fri: PRs merged → auto-deploy to QA
+### GitHub Environments
 
-Week 2
-├── Mon: Stabilization
-├── Tue: Sprint ends
-│        └── Run: release.yml (type: sprint)
-│            Creates: sprint-25.02
-│            Deploys: QA + Stage
-│
-│   Later (monthly):
-│        └── Run: release.yml (type: production)
-│            Uses: sprint-25.02
-│            Deploys: Prod (with approval)
-```
+Create these in **Settings → Environments**:
 
-## Rollback
+| Environment | Protection | Approvers |
+|-------------|------------|-----------|
+| `qa` | None | None |
+| `stage` | None | None |
+| `prod` | Required reviewers | Add team members |
 
-To rollback production:
+## Quick Reference
+
+### Sprint Release
 ```
 Actions → Release → Run workflow
-├── release-type: production
-├── tag: sprint-25.01  ◄── previous sprint tag
+├── release-type: sprint
+├── sprint-number: 54
+└── release-notes: Sprint 54 release
+```
+
+### Hotfix Release
+```
+Actions → Release → Run workflow
+├── release-type: hotfix
+├── sprint-number: 54
+├── hotfix-number: 1
+├── base-tag: main-sprint-54
+└── hotfix-branch: hotfix/INC001-fix
+```
+
+### Deploy to Stage
+```
+Actions → Deploy Stage → Run workflow
+└── tag: main-sprint-54
+```
+
+### Deploy to Prod
+```
+Actions → Deploy Prod → Run workflow
+├── tag: main-sprint-54
+└── change-ticket: CHG0012345
+```
+
+### Rollback
+```
+Actions → Deploy Prod → Run workflow
+└── tag: main-sprint-53  ← Previous release tag
 ```

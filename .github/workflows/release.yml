@@ -1,9 +1,8 @@
 # =============================================================================
-# UNIFIED RELEASE WORKFLOW
+# RELEASE WORKFLOW
 # =============================================================================
-# Handles both Sprint Release and Production Release
-# - Sprint: Tag → Build → QA → STAGE
-# - Production: Select tag → Approval → PROD
+# Single pipeline for Sprint and Hotfix releases
+# Build once → Tag → Deploy QA → Upload to GitHub Release
 # =============================================================================
 
 name: Release
@@ -17,26 +16,26 @@ on:
         type: choice
         options:
           - 'sprint'
-          - 'production'
+          - 'hotfix'
       sprint-number:
-        description: 'Sprint number (e.g., 25.02) - Required for sprint release'
+        description: 'Sprint number (e.g., 54)'
+        required: true
+        type: string
+      hotfix-number:
+        description: 'Hotfix number (only for hotfix, e.g., 1, 2, 3)'
         required: false
         type: string
-      tag:
-        description: 'Tag to deploy (e.g., sprint-25.02) - Required for production release'
+        default: '1'
+      base-tag:
+        description: 'Base tag for hotfix (e.g., main-sprint-54)'
         required: false
         type: string
-      skip-qa:
-        description: 'Skip QA deployment (sprint release only)'
+      hotfix-branch:
+        description: 'Hotfix branch (e.g., hotfix/INC001-fix-login)'
         required: false
-        type: boolean
-        default: false
+        type: string
       release-notes:
         description: 'Release notes'
-        required: false
-        type: string
-      change-ticket:
-        description: 'Change ticket (production release)'
         required: false
         type: string
 
@@ -45,7 +44,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: release-${{ inputs.release-type }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -54,17 +53,16 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Validate inputs
+  # Validate and prepare
   # ---------------------------------------------------------------------------
-  validate:
-    name: Validate Inputs
+  prepare:
+    name: Prepare Release
     runs-on: ubuntu-latest
     outputs:
-      release-type: ${{ inputs.release-type }}
       version: ${{ steps.prepare.outputs.version }}
       tag-name: ${{ steps.prepare.outputs.tag-name }}
       artifact-name: ${{ steps.prepare.outputs.artifact-name }}
-      needs-build: ${{ steps.prepare.outputs.needs-build }}
+      ref: ${{ steps.prepare.outputs.ref }}
 
     steps:
       - name: Checkout code
@@ -76,20 +74,13 @@ jobs:
         id: prepare
         run: |
           RELEASE_TYPE="${{ inputs.release-type }}"
+          SPRINT="${{ inputs.sprint-number }}"
 
           if [ "$RELEASE_TYPE" == "sprint" ]; then
-            # Sprint release validation
-            if [ -z "${{ inputs.sprint-number }}" ]; then
-              echo "::error::Sprint number is required for sprint release"
-              exit 1
-            fi
-
-            # Clean sprint number (remove any "sprint-" prefix if user included it)
-            SPRINT_NUMBER="${{ inputs.sprint-number }}"
-            SPRINT_NUMBER="${SPRINT_NUMBER#sprint-}"
-
-            TAG_NAME="sprint-${SPRINT_NUMBER}"
-            VERSION="1.0.${SPRINT_NUMBER//\./-}"
+            # Sprint release from main
+            TAG_NAME="main-sprint-${SPRINT}"
+            VERSION="1.0.${SPRINT}"
+            REF="main"
 
             # Check if tag already exists
             if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
@@ -97,29 +88,43 @@ jobs:
               exit 1
             fi
 
-            echo "needs-build=true" >> $GITHUB_OUTPUT
-
           else
-            # Production release validation
-            if [ -z "${{ inputs.tag }}" ]; then
-              echo "::error::Tag is required for production release"
+            # Hotfix release
+            HOTFIX_NUM="${{ inputs.hotfix-number }}"
+            BASE_TAG="${{ inputs.base-tag }}"
+            HOTFIX_BRANCH="${{ inputs.hotfix-branch }}"
+
+            # Validate inputs
+            if [ -z "$BASE_TAG" ]; then
+              echo "::error::Base tag is required for hotfix"
+              exit 1
+            fi
+            if [ -z "$HOTFIX_BRANCH" ]; then
+              echo "::error::Hotfix branch is required"
               exit 1
             fi
 
-            TAG_NAME="${{ inputs.tag }}"
-
-            # Verify tag exists
-            if ! git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
-              echo "::error::Tag ${TAG_NAME} does not exist!"
+            # Verify base tag exists
+            if ! git rev-parse "${BASE_TAG}" >/dev/null 2>&1; then
+              echo "::error::Base tag ${BASE_TAG} does not exist!"
               exit 1
             fi
 
-            # Extract version from tag (sprint-25.02 → 1.0.25-02)
-            SPRINT_NUMBER="${TAG_NAME#sprint-}"
-            SPRINT_NUMBER="${SPRINT_NUMBER#hotfix-}"
-            VERSION="1.0.${SPRINT_NUMBER//\./-}"
+            # Verify hotfix branch exists
+            if ! git ls-remote --exit-code --heads origin "${HOTFIX_BRANCH}" >/dev/null 2>&1; then
+              echo "::error::Hotfix branch ${HOTFIX_BRANCH} does not exist!"
+              exit 1
+            fi
 
-            echo "needs-build=false" >> $GITHUB_OUTPUT
+            TAG_NAME="hotfix-sprint-${SPRINT}-${HOTFIX_NUM}"
+            VERSION="1.0.${SPRINT}.${HOTFIX_NUM}"
+            REF="${HOTFIX_BRANCH}"
+
+            # Check if tag already exists
+            if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
+              echo "::error::Tag ${TAG_NAME} already exists! Increment hotfix number."
+              exit 1
+            fi
           fi
 
           ARTIFACT_NAME="calculator-${VERSION}"
@@ -127,6 +132,7 @@ jobs:
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag-name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          echo "ref=${REF}" >> $GITHUB_OUTPUT
 
           # Summary
           echo "## Release Configuration" >> $GITHUB_STEP_SUMMARY
@@ -136,33 +142,34 @@ jobs:
           echo "| Type | ${RELEASE_TYPE} |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Tag | ${TAG_NAME} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | ${REF} |" >> $GITHUB_STEP_SUMMARY
           echo "| Artifact | ${ARTIFACT_NAME} |" >> $GITHUB_STEP_SUMMARY
 
   # ---------------------------------------------------------------------------
-  # Build (sprint release only)
+  # Build
   # ---------------------------------------------------------------------------
   build:
     name: Build
-    needs: validate
-    if: needs.validate.outputs.release-type == 'sprint'
+    needs: prepare
     uses: ./.github/workflows/build.yml
     with:
-      version: ${{ needs.validate.outputs.version }}
+      version: ${{ needs.prepare.outputs.version }}
       is-release: true
+      ref: ${{ needs.prepare.outputs.ref }}
 
   # ---------------------------------------------------------------------------
-  # Create tag (sprint release only)
+  # Create tag
   # ---------------------------------------------------------------------------
   create-tag:
     name: Create Tag
-    needs: [validate, build]
-    if: needs.validate.outputs.release-type == 'sprint' && needs.build.result == 'success'
+    needs: [prepare, build]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
 
       - name: Create and push tag
@@ -170,73 +177,73 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          TAG_MESSAGE="Sprint ${{ inputs.sprint-number }} Release
+          COMMIT_SHA=$(git rev-parse HEAD)
 
-          Version: ${{ needs.validate.outputs.version }}
+          if [ "${{ inputs.release-type }}" == "sprint" ]; then
+            TAG_MESSAGE="Sprint ${{ inputs.sprint-number }} Release
+
+          Version: ${{ needs.prepare.outputs.version }}
           Date: $(date -u +%Y-%m-%d)
-          Commit: ${{ github.sha }}
+          Commit: ${COMMIT_SHA}
 
           ${{ inputs.release-notes || 'No release notes provided.' }}"
+          else
+            TAG_MESSAGE="Hotfix for Sprint ${{ inputs.sprint-number }}
 
-          git tag -a "${{ needs.validate.outputs.tag-name }}" -m "${TAG_MESSAGE}"
-          git push origin "${{ needs.validate.outputs.tag-name }}"
+          Version: ${{ needs.prepare.outputs.version }}
+          Hotfix: #${{ inputs.hotfix-number }}
+          Base: ${{ inputs.base-tag }}
+          Branch: ${{ inputs.hotfix-branch }}
+          Date: $(date -u +%Y-%m-%d)
+          Commit: ${COMMIT_SHA}
 
-          echo "✅ Created tag: ${{ needs.validate.outputs.tag-name }}"
+          ${{ inputs.release-notes || 'No release notes provided.' }}"
+          fi
+
+          git tag -a "${{ needs.prepare.outputs.tag-name }}" -m "${TAG_MESSAGE}"
+          git push origin "${{ needs.prepare.outputs.tag-name }}"
+
+          echo "✅ Created tag: ${{ needs.prepare.outputs.tag-name }}"
 
   # ---------------------------------------------------------------------------
-  # Deploy to QA (sprint release only, unless skipped)
+  # Deploy to QA
   # ---------------------------------------------------------------------------
   deploy-qa:
     name: Deploy to QA
-    needs: [validate, build, create-tag]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'sprint' &&
-      needs.build.result == 'success' &&
-      !inputs.skip-qa
+    needs: [prepare, build, create-tag]
     uses: ./.github/workflows/deploy.yml
     with:
       environment: qa
-      artifact-name: ${{ needs.validate.outputs.artifact-name }}
-      version: ${{ needs.validate.outputs.version }}
+      artifact-name: ${{ needs.build.outputs.artifact-name }}
+      version: ${{ needs.prepare.outputs.version }}
     secrets: inherit
 
   # ---------------------------------------------------------------------------
-  # Deploy to STAGE (sprint release only)
-  # ---------------------------------------------------------------------------
-  deploy-stage:
-    name: Deploy to Stage
-    needs: [validate, build, create-tag, deploy-qa]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'sprint' &&
-      needs.build.result == 'success' &&
-      needs.create-tag.result == 'success' &&
-      (needs.deploy-qa.result == 'success' || needs.deploy-qa.result == 'skipped')
-    uses: ./.github/workflows/deploy.yml
-    with:
-      environment: stage
-      artifact-name: ${{ needs.validate.outputs.artifact-name }}
-      version: ${{ needs.validate.outputs.version }}
-    secrets: inherit
-
-  # ---------------------------------------------------------------------------
-  # Create GitHub Release (sprint release only)
+  # Create GitHub Release (store artifact)
   # ---------------------------------------------------------------------------
   create-release:
     name: Create GitHub Release
-    needs: [validate, build, create-tag, deploy-stage]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'sprint' &&
-      needs.deploy-stage.result == 'success'
+    needs: [prepare, build, create-tag, deploy-qa]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./release-artifact
+
+      - name: Zip artifact for release
+        run: |
+          cd release-artifact
+          zip -r ../artifact.zip .
+          echo "Artifact size: $(du -h ../artifact.zip | cut -f1)"
 
       - name: Generate changelog
         id: changelog
@@ -251,211 +258,60 @@ jobs:
           echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build.outputs.artifact-name }}
-          path: ./release-artifact
-
-      - name: Zip artifact for release
-        run: |
-          cd release-artifact
-          zip -r ../artifact.zip .
-          cd ..
-          echo "Artifact size: $(du -h artifact.zip | cut -f1)"
-
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ needs.validate.outputs.tag-name }}
-          name: "Sprint ${{ inputs.sprint-number }}"
+          tag_name: ${{ needs.prepare.outputs.tag-name }}
+          name: "${{ inputs.release-type == 'sprint' && format('Sprint {0}', inputs.sprint-number) || format('Hotfix {0}-{1}', inputs.sprint-number, inputs.hotfix-number) }}"
           files: artifact.zip
           body: |
-            ## Sprint ${{ inputs.sprint-number }} Release
+            ## ${{ inputs.release-type == 'sprint' && 'Sprint Release' || 'Hotfix Release' }}
 
-            **Version:** ${{ needs.validate.outputs.version }}
+            **Version:** ${{ needs.prepare.outputs.version }}
+            **Tag:** ${{ needs.prepare.outputs.tag-name }}
+            ${{ inputs.release-type == 'hotfix' && format('**Base:** {0}', inputs.base-tag) || '' }}
 
             ### Release Notes
-            ${{ inputs.release-notes || 'Sprint release' }}
+            ${{ inputs.release-notes || 'No release notes provided.' }}
 
             ### Changes
             ${{ steps.changelog.outputs.commits }}
 
             ### Deployment Status
             - ✅ QA: Deployed
-            - ✅ Stage: Deployed
-            - ⏳ Production: Run this workflow with `production` type
+            - ⏳ Stage: Run **Deploy Stage** workflow
+            - ⏳ Prod: Run **Deploy Prod** workflow
 
             ### Artifact
-            Download `artifact.zip` attached to this release.
-
-  # ---------------------------------------------------------------------------
-  # Download artifact from GitHub Release (production release only)
-  # ---------------------------------------------------------------------------
-  download-release-artifact:
-    name: Download Release Artifact
-    needs: validate
-    if: needs.validate.outputs.release-type == 'production'
-    runs-on: ubuntu-latest
-    outputs:
-      artifact-name: ${{ steps.download.outputs.artifact-name }}
-
-    steps:
-      - name: Download artifact from GitHub Release
-        id: download
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.validate.outputs.tag-name }}"
-          ARTIFACT_NAME="${{ needs.validate.outputs.artifact-name }}"
-
-          echo "Downloading artifact from release: ${TAG}"
-
-          # Download the artifact.zip from the release
-          gh release download "${TAG}" \
-            --pattern "artifact.zip" \
-            --repo ${{ github.repository }}
-
-          # Extract it
-          unzip -o artifact.zip -d ./artifact-content
-
-          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
-          echo "✅ Downloaded artifact from release ${TAG}"
-          ls -la ./artifact-content/
-
-      - name: Upload as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.validate.outputs.artifact-name }}
-          path: ./artifact-content
-          retention-days: 1
-
-  # ---------------------------------------------------------------------------
-  # Pre-deployment checklist (production release only)
-  # ---------------------------------------------------------------------------
-  pre-deploy-checklist:
-    name: Pre-deployment Checklist
-    needs: [validate, download-release-artifact]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'production' &&
-      needs.download-release-artifact.result == 'success'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Run pre-deployment checks
-        run: |
-          echo "## Pre-deployment Checklist" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ -n "${{ inputs.change-ticket }}" ]; then
-            echo "- ✅ Change ticket: ${{ inputs.change-ticket }}" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- ⚠️ No change ticket provided" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          echo "- ✅ Tag: ${{ needs.validate.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Version: ${{ needs.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Artifact: Downloaded from release" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Triggered by: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-
-  # ---------------------------------------------------------------------------
-  # Deploy to Production (production release only, requires approval)
-  # ---------------------------------------------------------------------------
-  deploy-prod:
-    name: Deploy to Production
-    needs: [validate, download-release-artifact, pre-deploy-checklist]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'production' &&
-      needs.download-release-artifact.result == 'success' &&
-      needs.pre-deploy-checklist.result == 'success'
-    uses: ./.github/workflows/deploy.yml
-    with:
-      environment: prod
-      artifact-name: ${{ needs.validate.outputs.artifact-name }}
-      version: ${{ needs.validate.outputs.version }}
-    secrets: inherit
-
-  # ---------------------------------------------------------------------------
-  # Post-production tasks
-  # ---------------------------------------------------------------------------
-  post-prod:
-    name: Post-Production Tasks
-    needs: [validate, deploy-prod]
-    if: |
-      always() &&
-      needs.validate.outputs.release-type == 'production' &&
-      needs.deploy-prod.result == 'success'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Update production tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Update prod tag to point to deployed version
-          git tag -d prod 2>/dev/null || true
-          git push origin :refs/tags/prod 2>/dev/null || true
-          git tag -a prod -m "Production: ${{ needs.validate.outputs.version }}" ${{ needs.validate.outputs.tag-name }}
-          git push origin prod
-
-          echo "✅ Updated 'prod' tag to ${{ needs.validate.outputs.tag-name }}"
-
-      - name: Notify deployment
-        run: |
-          echo "📢 Production deployment complete"
-          # Add notification logic here (Slack, Teams, etc.)
+            Download `artifact.zip` to deploy manually or use deployment workflows.
 
   # ---------------------------------------------------------------------------
   # Summary
   # ---------------------------------------------------------------------------
   summary:
     name: Release Summary
-    needs: [validate, build, create-tag, deploy-qa, deploy-stage, create-release, pre-deploy-checklist, deploy-prod, post-prod]
+    needs: [prepare, build, create-tag, deploy-qa, create-release]
     runs-on: ubuntu-latest
     if: always()
 
     steps:
       - name: Generate summary
         run: |
-          RELEASE_TYPE="${{ needs.validate.outputs.release-type }}"
-
           echo "## 🚀 Release Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Type:** ${RELEASE_TYPE^}" >> $GITHUB_STEP_SUMMARY
-          echo "**Version:** ${{ needs.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Tag:** ${{ needs.validate.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ inputs.release-type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ needs.prepare.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$RELEASE_TYPE" == "sprint" ]; then
-            echo "### Sprint Release Status" >> $GITHUB_STEP_SUMMARY
-            echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Deploy QA | ${{ needs.deploy-qa.result == 'success' && '✅ Success' || (needs.deploy-qa.result == 'skipped' && '⏭️ Skipped' || '❌ Failed') }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Deploy Stage | ${{ needs.deploy-stage.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
-            echo "Run this workflow again with \`production\` type and tag \`${{ needs.validate.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### Production Release Status" >> $GITHUB_STEP_SUMMARY
-            echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
-            echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
-            echo "| Pre-deploy Check | ${{ needs.pre-deploy-checklist.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Deploy Prod | ${{ needs.deploy-prod.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-            echo "| Post-deploy | ${{ needs.post-prod.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
-
-            if [ "${{ needs.deploy-prod.result }}" == "success" ]; then
-              echo "" >> $GITHUB_STEP_SUMMARY
-              echo "### ✅ Production deployment successful!" >> $GITHUB_STEP_SUMMARY
-            fi
-          fi
+          echo "### Pipeline Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Create Tag | ${{ needs.create-tag.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy QA | ${{ needs.deploy-qa.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Release | ${{ needs.create-release.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "1. Test in QA environment" >> $GITHUB_STEP_SUMMARY
+          echo "2. Run **Deploy Stage** workflow with tag: \`${{ needs.prepare.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. Run **Deploy Prod** workflow with tag: \`${{ needs.prepare.outputs.tag-name }}\`" >> $GITHUB_STEP_SUMMARY
