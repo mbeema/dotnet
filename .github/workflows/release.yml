@@ -396,11 +396,61 @@ jobs:
             **Deploy:** Run `Deploy` workflow with tag `${{ needs.prepare.outputs.tag }}`
 
   # ===========================================================================
+  # AUTO-DEPLOY TO STAGE
+  # ===========================================================================
+  deploy-stage:
+    name: Deploy to Stage
+    needs: [prepare, build, release]
+    if: needs.prepare.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: stage
+      url: https://stage.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./deploy
+
+      - name: Deploy to Stage
+        run: |
+          echo "============================================"
+          echo "  AUTO-DEPLOYING TO STAGE"
+          echo "============================================"
+          echo ""
+          echo "Tag:     ${{ needs.prepare.outputs.tag }}"
+          echo "Version: ${{ needs.prepare.outputs.version }}"
+          echo "Type:    ${{ needs.prepare.outputs.type }}"
+          echo ""
+          cat ./deploy/build-info.json
+          echo ""
+          echo "--------------------------------------------"
+          echo "Running deployment script..."
+          echo "--------------------------------------------"
+          # =============================================
+          # DUMMY DEPLOYMENT - Replace with actual deploy
+          # Example for Azure App Service:
+          # az webapp deploy --resource-group $RG --name $APP_STAGE --src-path ./deploy
+          # =============================================
+          sleep 2
+          echo "Stage deployment successful!"
+
+      - name: Smoke test
+        run: |
+          echo "Running smoke tests for stage..."
+          # Add actual smoke tests
+          # Example: curl -f https://stage.example.com/health
+          sleep 1
+          echo "Smoke tests passed!"
+
+  # ===========================================================================
   # SUMMARY
   # ===========================================================================
   summary:
     name: Summary
-    needs: [prepare, build, release]
+    needs: [prepare, build, release, deploy-stage]
     if: always()
     runs-on: ubuntu-latest
 
@@ -418,6 +468,7 @@ jobs:
             echo "| Tag | ${{ needs.prepare.outputs.tag }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Version | ${{ needs.prepare.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
             echo "| Type | ${{ needs.prepare.outputs.type }} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Stage Deploy | ${{ needs.deploy-stage.result == 'success' && 'Success' || 'Failed' }} |" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Next:** Run Deploy workflow to deploy to Stage/Prod" >> $GITHUB_STEP_SUMMARY
+            echo "**Next:** Test on Stage, then run Deploy workflow for Prod" >> $GITHUB_STEP_SUMMARY
           fi

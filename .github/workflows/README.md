@@ -19,11 +19,12 @@
 │                        ├─ Security Scan                                         │
 │                        └─ Deploy to QA                                          │
 │                                                                                  │
-│  Manual ─────────────► release.yml ───────────► GitHub Release                  │
+│  Manual ─────────────► release.yml ───────────► GitHub Release + Stage          │
 │  Schedule (Tue 6PM) ─► ├─ Auto-version                                          │
 │                        ├─ Build & Test                                          │
 │                        ├─ Create Tag                                            │
-│                        └─ Create Release                                        │
+│                        ├─ Create Release                                        │
+│                        └─ Auto-deploy to Stage                                  │
 │                                                                                  │
 │  Manual ─────────────► deploy.yml ────────────► QA / Stage / Prod               │
 │                        ├─ Download from Release                                 │
@@ -215,10 +216,21 @@ Hotfix Release:
   New tag:  v1.54.2  (patch + 1)
 ```
 
+**Jobs:**
+
+| Job | Description |
+|-----|-------------|
+| `prepare` | Calculate version, validate inputs |
+| `build` | Build & test application |
+| `release` | Create tag and GitHub Release |
+| `deploy-stage` | Auto-deploy to Stage environment |
+| `summary` | Generate pipeline summary |
+
 **Outputs:**
 - Git tag
 - GitHub Release with artifact
 - Changelog
+- Stage deployment
 
 ---
 
