@@ -34,8 +34,12 @@ on:
         type: boolean
         default: false
       base-tag:
-        description: 'Base tag to hotfix from (defaults to current prod tag)'
-        required: false
+        description: 'Base tag to hotfix from (e.g., sprint-54)'
+        required: true
+        type: string
+      hotfix-branch:
+        description: 'Hotfix branch name (e.g., hotfix/fix-login-bug)'
+        required: true
         type: string
 
 permissions:
@@ -68,16 +72,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate inputs
+        run: |
+          # Verify base tag exists
+          if ! git rev-parse "${{ inputs.base-tag }}" >/dev/null 2>&1; then
+            echo "::error::Base tag '${{ inputs.base-tag }}' does not exist!"
+            exit 1
+          fi
+
+          # Verify hotfix branch exists
+          if ! git ls-remote --exit-code --heads origin "${{ inputs.hotfix-branch }}" >/dev/null 2>&1; then
+            echo "::error::Hotfix branch '${{ inputs.hotfix-branch }}' does not exist!"
+            echo "::error::Create it first: git checkout -b ${{ inputs.hotfix-branch }} ${{ inputs.base-tag }}"
+            exit 1
+          fi
+
+          echo "✅ Base tag and hotfix branch validated"
+
       - name: Determine hotfix version
         id: version
         run: |
-          # Determine base reference
-          if [ -n "${{ inputs.base-tag }}" ]; then
-            BASE_REF="${{ inputs.base-tag }}"
-          else
-            # Use current prod tag or main
-            BASE_REF=$(git describe --tags --match "prod" --abbrev=0 2>/dev/null || echo "main")
-          fi
+          BASE_REF="${{ inputs.base-tag }}"
 
           # Get last hotfix number for today
           TODAY=$(date +%Y%m%d)
@@ -91,7 +106,7 @@ jobs:
             HOTFIX_NUM=1
           fi
 
-          VERSION="1.0.0-hotfix.${TODAY}.${HOTFIX_NUM}"
+          VERSION="1.0.${TODAY}${HOTFIX_NUM}"
           TAG_NAME="hotfix-${TODAY}.${HOTFIX_NUM}"
 
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -107,7 +122,8 @@ jobs:
           echo "| Incident | ${{ inputs.incident-ticket }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
           echo "| Tag | ${TAG_NAME} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Base | ${BASE_REF} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Base Tag | ${BASE_REF} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Hotfix Branch | ${{ inputs.hotfix-branch }} |" >> $GITHUB_STEP_SUMMARY
 
       - name: Validate severity for skip-stage
         if: ${{ inputs.skip-stage && inputs.severity != 'Critical - Production down' }}
@@ -116,7 +132,7 @@ jobs:
           exit 1
 
   # ---------------------------------------------------------------------------
-  # Build hotfix
+  # Build hotfix (from hotfix branch)
   # ---------------------------------------------------------------------------
   build:
     name: Build Hotfix
@@ -125,9 +141,10 @@ jobs:
     with:
       version: ${{ needs.prepare.outputs.version }}
       is-release: true
+      ref: ${{ inputs.hotfix-branch }}
 
   # ---------------------------------------------------------------------------
-  # Create hotfix tag
+  # Create hotfix tag (on hotfix branch)
   # ---------------------------------------------------------------------------
   create-tag:
     name: Create Hotfix Tag
@@ -135,9 +152,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout hotfix branch
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.hotfix-branch }}
           fetch-depth: 0
 
       - name: Create and push tag
@@ -145,13 +163,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          COMMIT_SHA=$(git rev-parse HEAD)
+
           TAG_MESSAGE="🚨 HOTFIX: ${{ inputs.hotfix-description }}
 
           Version: ${{ needs.prepare.outputs.version }}
           Severity: ${{ inputs.severity }}
           Incident: ${{ inputs.incident-ticket }}
+          Base Tag: ${{ inputs.base-tag }}
+          Hotfix Branch: ${{ inputs.hotfix-branch }}
           Date: $(date -u +%Y-%m-%d)
-          Commit: ${{ github.sha }}
+          Commit: ${COMMIT_SHA}
           Triggered by: ${{ github.actor }}"
 
           git tag -a "${{ needs.prepare.outputs.tag-name }}" -m "${TAG_MESSAGE}"
