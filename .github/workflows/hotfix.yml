@@ -246,17 +246,74 @@ jobs:
     secrets: inherit
 
   # ---------------------------------------------------------------------------
+  # Create GitHub Release (for build-once traceability)
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    needs: [prepare, build, create-tag, deploy-prod]
+    if: needs.deploy-prod.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.hotfix-branch }}
+          fetch-depth: 0
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./release-artifact
+
+      - name: Zip artifact for release
+        run: |
+          cd release-artifact
+          zip -r ../artifact.zip .
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag-name }}
+          name: "🚨 Hotfix: ${{ inputs.hotfix-description }}"
+          files: artifact.zip
+          body: |
+            ## 🚨 Hotfix Release
+
+            **Version:** ${{ needs.prepare.outputs.version }}
+            **Incident:** ${{ inputs.incident-ticket }}
+            **Severity:** ${{ inputs.severity }}
+            **Base Tag:** ${{ inputs.base-tag }}
+
+            ### Description
+            ${{ inputs.hotfix-description }}
+
+            ### Deployment Status
+            - ✅ QA: Deployed
+            - ✅ Stage: ${{ inputs.skip-stage && 'Skipped' || 'Deployed' }}
+            - ✅ Production: Deployed
+
+            ### Post-Hotfix Checklist
+            - [ ] Cherry-pick fix to main branch
+            - [ ] Update incident ticket
+            - [ ] Notify stakeholders
+            - [ ] Schedule post-mortem if needed
+
+  # ---------------------------------------------------------------------------
   # Post-hotfix tasks
   # ---------------------------------------------------------------------------
   post-hotfix:
     name: Post-Hotfix Tasks
-    needs: [prepare, deploy-prod]
+    needs: [prepare, build, deploy-prod, create-release]
+    if: always() && needs.deploy-prod.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Update prod tag
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.hotfix-branch }}
           fetch-depth: 0
 
       - name: Update production tag
@@ -264,31 +321,47 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Update prod tag
+          # Update prod tag to point to hotfix
           git tag -d prod 2>/dev/null || true
           git push origin :refs/tags/prod 2>/dev/null || true
           git tag -a prod -m "Production: ${{ needs.prepare.outputs.version }} (Hotfix)" ${{ needs.prepare.outputs.tag-name }}
           git push origin prod
 
-      - name: Create incident resolution note
+      - name: Get hotfix commit SHA
+        id: commit
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Post-hotfix summary
         run: |
           echo "## 🚨 Hotfix Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Incident:** ${{ inputs.incident-ticket }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Resolution:** Hotfix ${{ needs.prepare.outputs.version }} deployed to production" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.prepare.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ needs.prepare.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ⚠️ Required: Cherry-pick to main" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "git checkout main" >> $GITHUB_STEP_SUMMARY
+          echo "git pull" >> $GITHUB_STEP_SUMMARY
+          echo "git cherry-pick ${{ steps.commit.outputs.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "git push" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Action Items" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Update incident ticket with resolution details" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Notify stakeholders of resolution" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] **Cherry-pick fix to main** (required)" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Update incident ticket with resolution" >> $GITHUB_STEP_SUMMARY
+          echo "- [ ] Notify stakeholders" >> $GITHUB_STEP_SUMMARY
           echo "- [ ] Schedule post-mortem if needed" >> $GITHUB_STEP_SUMMARY
-          echo "- [ ] Consider if fix needs backport to feature branches" >> $GITHUB_STEP_SUMMARY
 
   # ---------------------------------------------------------------------------
   # Summary
   # ---------------------------------------------------------------------------
   summary:
     name: Hotfix Summary
-    needs: [prepare, build, create-tag, deploy-qa, qa-validation, deploy-stage, deploy-prod, post-hotfix]
+    needs: [prepare, build, create-tag, deploy-qa, qa-validation, deploy-stage, deploy-prod, create-release, post-hotfix]
     runs-on: ubuntu-latest
     if: always()
 
