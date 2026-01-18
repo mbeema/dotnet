@@ -47,4 +47,12 @@ public class CalculatorService
     public int Max(int a, int b) => Math.Max(a, b);
 
     public int Min(int a, int b) => Math.Min(a, b);
+
+    // Hotfix: Added modulo operation
+    public int Modulo(int a, int b)
+    {
+        if (b == 0)
+            throw new DivideByZeroException("Cannot divide by zero");
+        return a % b;
+    }
 }
