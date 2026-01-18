@@ -46,6 +46,16 @@
 | `release.yml` | Create versioned releases | Manual, Schedule |
 | `deploy.yml` | Deploy releases to environments | Manual |
 
+### Run Names in Actions Tab
+
+Each workflow displays a descriptive name:
+
+| Workflow | Example Run Names |
+|----------|-------------------|
+| CI | `CI - PR #123`, `CI - main`, `CI - hotfix/INC123-fix` |
+| Release | `Sprint Release 55`, `Sprint Release (auto)`, `Hotfix Release - hotfix/INC123-fix` |
+| Deploy | `Deploy v1.55.0 to stage`, `Deploy v1.55.0 to prod` |
+
 ---
 
 ## Version Scheme
