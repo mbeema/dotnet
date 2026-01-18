@@ -32,7 +32,8 @@ workflows/
 │                         CI/CD (Automatic)                                │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   Push to main ───► ci-cd.yml ───► Build ───► Deploy QA                 │
+│   Push to main ─────► ci-cd.yml ───► Build ───► Deploy QA               │
+│   Push to hotfix/* ──►                                                   │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 
@@ -142,7 +143,7 @@ Production Bug Found (running v1.54.0)
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `pr-validation.yml` | PR to main | Build, test, security |
-| `ci-cd.yml` | Push to main | Build → QA (continuous) |
+| `ci-cd.yml` | Push to main or hotfix/* | Build → QA (continuous) |
 | `release.yml` | Manual / Scheduled | Build → Tag → GitHub Release |
 | `deploy.yml` | Manual | Deploy any release to any environment |
 | `create-hotfix-branch.yml` | Manual | Create hotfix branch from tag |
