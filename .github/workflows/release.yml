@@ -11,7 +11,7 @@
 # =============================================================================
 
 name: Release
-run-name: "${{ inputs.type == 'sprint' && format('Sprint Release {0}', inputs.sprint-number || '(auto)') || format('Hotfix Release - {0}', inputs.hotfix-branch) }}"
+run-name: "${{ github.event_name == 'schedule' && 'Scheduled Sprint Release' || inputs.type == 'sprint' && format('Sprint Release {0}', inputs.sprint-number || '(auto)') || format('Hotfix Release - {0}', inputs.hotfix-branch) }}"
 
 on:
   workflow_dispatch:
