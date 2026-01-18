@@ -144,7 +144,7 @@ jobs:
   build:
     name: Build
     needs: validate
-    if: needs.validate.outputs.needs-build == 'true'
+    if: needs.validate.outputs.release-type == 'sprint'
     uses: ./.github/workflows/build.yml
     with:
       version: ${{ needs.validate.outputs.version }}
@@ -156,7 +156,7 @@ jobs:
   create-tag:
     name: Create Tag
     needs: [validate, build]
-    if: needs.validate.outputs.needs-build == 'true'
+    if: needs.validate.outputs.release-type == 'sprint' && needs.build.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
@@ -251,11 +251,25 @@ jobs:
           echo "$COMMITS" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: ./release-artifact
+
+      - name: Zip artifact for release
+        run: |
+          cd release-artifact
+          zip -r ../artifact.zip .
+          cd ..
+          echo "Artifact size: $(du -h artifact.zip | cut -f1)"
+
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.validate.outputs.tag-name }}
           name: "Sprint ${{ inputs.sprint-number }}"
+          files: artifact.zip
           body: |
             ## Sprint ${{ inputs.sprint-number }} Release
 
@@ -272,13 +286,60 @@ jobs:
             - ✅ Stage: Deployed
             - ⏳ Production: Run this workflow with `production` type
 
+            ### Artifact
+            Download `artifact.zip` attached to this release.
+
+  # ---------------------------------------------------------------------------
+  # Download artifact from GitHub Release (production release only)
+  # ---------------------------------------------------------------------------
+  download-release-artifact:
+    name: Download Release Artifact
+    needs: validate
+    if: needs.validate.outputs.release-type == 'production'
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.download.outputs.artifact-name }}
+
+    steps:
+      - name: Download artifact from GitHub Release
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.validate.outputs.tag-name }}"
+          ARTIFACT_NAME="${{ needs.validate.outputs.artifact-name }}"
+
+          echo "Downloading artifact from release: ${TAG}"
+
+          # Download the artifact.zip from the release
+          gh release download "${TAG}" \
+            --pattern "artifact.zip" \
+            --repo ${{ github.repository }}
+
+          # Extract it
+          unzip -o artifact.zip -d ./artifact-content
+
+          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+          echo "✅ Downloaded artifact from release ${TAG}"
+          ls -la ./artifact-content/
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.validate.outputs.artifact-name }}
+          path: ./artifact-content
+          retention-days: 1
+
   # ---------------------------------------------------------------------------
   # Pre-deployment checklist (production release only)
   # ---------------------------------------------------------------------------
   pre-deploy-checklist:
     name: Pre-deployment Checklist
-    needs: validate
-    if: needs.validate.outputs.release-type == 'production'
+    needs: [validate, download-release-artifact]
+    if: |
+      always() &&
+      needs.validate.outputs.release-type == 'production' &&
+      needs.download-release-artifact.result == 'success'
     runs-on: ubuntu-latest
 
     steps:
@@ -295,6 +356,7 @@ jobs:
 
           echo "- ✅ Tag: ${{ needs.validate.outputs.tag-name }}" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Version: ${{ needs.validate.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Artifact: Downloaded from release" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Triggered by: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
 
   # ---------------------------------------------------------------------------
@@ -302,10 +364,11 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy-prod:
     name: Deploy to Production
-    needs: [validate, pre-deploy-checklist]
+    needs: [validate, download-release-artifact, pre-deploy-checklist]
     if: |
       always() &&
       needs.validate.outputs.release-type == 'production' &&
+      needs.download-release-artifact.result == 'success' &&
       needs.pre-deploy-checklist.result == 'success'
     uses: ./.github/workflows/deploy.yml
     with:

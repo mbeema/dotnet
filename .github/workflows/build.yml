@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      ref:
+        description: 'Git ref to checkout (tag, branch, or SHA)'
+        required: false
+        type: string
+        default: ''
     outputs:
       artifact-name:
         description: 'Name of the uploaded artifact'
@@ -39,6 +44,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Setup .NET
