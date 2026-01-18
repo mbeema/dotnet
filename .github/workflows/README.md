@@ -199,6 +199,7 @@ Set per-environment in **Settings → Environments → [env] → Environment var
 | Input | Sprint | Hotfix | Description |
 |-------|--------|--------|-------------|
 | `type` | Required | Required | `sprint` or `hotfix` |
+| `sprint-number` | Optional | - | e.g., `55` (auto-increments if not provided) |
 | `hotfix-branch` | - | **Required** | e.g., `hotfix/INC123-fix-login` |
 | `notes` | Optional | Optional | Release notes |
 
@@ -428,10 +429,13 @@ Deploy:  https://github.com/{owner}/{repo}/actions/workflows/deploy.yml
 ### CLI Commands
 
 ```bash
-# Sprint release (everything auto-calculated)
+# Sprint release (auto-increment from last tag)
 gh workflow run release.yml -f type=sprint
 
-# Hotfix release (just provide branch name)
+# Sprint release (specific sprint number)
+gh workflow run release.yml -f type=sprint -f sprint-number=55
+
+# Hotfix release (provide branch name)
 gh workflow run release.yml -f type=hotfix -f hotfix-branch=hotfix/INC123-fix-login
 
 # Deploy to prod
