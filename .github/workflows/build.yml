@@ -46,11 +46,16 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Set artifact name
+      - name: Set artifact name and versions
         id: set-artifact-name
         run: |
           ARTIFACT_NAME="calculator-${{ inputs.version }}"
           echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+
+          # Extract numeric version for AssemblyVersion (e.g., 1.0.42 from 1.0.0-sprint.25.01)
+          # AssemblyVersion only accepts major.minor.build.revision format
+          NUMERIC_VERSION=$(echo "${{ inputs.version }}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || echo "1.0.0")
+          echo "numeric-version=${NUMERIC_VERSION}.0" >> $GITHUB_OUTPUT
 
       - name: Restore dependencies
         run: dotnet restore
@@ -60,8 +65,9 @@ jobs:
           dotnet build --no-restore \
             --configuration Release \
             -p:Version=${{ inputs.version }} \
-            -p:AssemblyVersion=${{ inputs.version }} \
-            -p:FileVersion=${{ inputs.version }}
+            -p:AssemblyVersion=${{ steps.set-artifact-name.outputs.numeric-version }} \
+            -p:FileVersion=${{ steps.set-artifact-name.outputs.numeric-version }} \
+            -p:InformationalVersion=${{ inputs.version }}
 
       - name: Run tests
         run: |
