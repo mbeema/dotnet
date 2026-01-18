@@ -102,4 +102,37 @@ public class CalculatorServiceTests
     {
         Assert.Throws<ArgumentException>(() => _calculator.Factorial(-1));
     }
+
+    [Theory]
+    [InlineData(5, 5)]
+    [InlineData(-5, 5)]
+    [InlineData(0, 0)]
+    [InlineData(-100, 100)]
+    public void Abs_ReturnsAbsoluteValue(int number, int expected)
+    {
+        var result = _calculator.Abs(number);
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData(5, 3, 5)]
+    [InlineData(-1, -5, -1)]
+    [InlineData(0, 0, 0)]
+    [InlineData(10, 10, 10)]
+    public void Max_ReturnsLargerValue(int a, int b, int expected)
+    {
+        var result = _calculator.Max(a, b);
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData(5, 3, 3)]
+    [InlineData(-1, -5, -5)]
+    [InlineData(0, 0, 0)]
+    [InlineData(10, 10, 10)]
+    public void Min_ReturnsSmallerValue(int a, int b, int expected)
+    {
+        var result = _calculator.Min(a, b);
+        Assert.Equal(expected, result);
+    }
 }

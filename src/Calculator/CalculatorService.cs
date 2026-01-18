@@ -41,4 +41,10 @@ public class CalculatorService
 
         return n * Factorial(n - 1);
     }
+
+    public int Abs(int number) => Math.Abs(number);
+
+    public int Max(int a, int b) => Math.Max(a, b);
+
+    public int Min(int a, int b) => Math.Min(a, b);
 }
