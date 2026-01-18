@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       base-tag:
-        description: 'Release tag to branch from (e.g., main-sprint-54)'
+        description: 'Release tag to branch from (e.g., v1.54.0)'
         required: true
         type: string
       incident-id:
@@ -33,9 +33,9 @@ jobs:
     steps:
       - name: Validate inputs
         run: |
-          # Validate base tag format
-          if [[ ! "${{ inputs.base-tag }}" =~ ^(main-sprint-[0-9]+|hotfix-sprint-[0-9]+-[0-9]+)$ ]]; then
-            echo "::error::Invalid tag format. Expected: main-sprint-N or hotfix-sprint-N-M"
+          # Validate base tag format (SemVer: v1.X.Y)
+          if [[ ! "${{ inputs.base-tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid tag format. Expected SemVer: v1.54.0"
             exit 1
           fi
 
@@ -64,8 +64,7 @@ jobs:
             echo "::error::Tag '${{ inputs.base-tag }}' does not exist!"
             echo ""
             echo "Available release tags:"
-            git tag -l "main-sprint-*" | tail -5
-            git tag -l "hotfix-sprint-*" | tail -5
+            git tag -l "v*" --sort=-v:refname | head -10
             exit 1
           fi
           echo "✅ Tag '${{ inputs.base-tag }}' found"

@@ -27,7 +27,7 @@ on:
         type: string
         default: '1'
       base-tag:
-        description: 'Base tag for hotfix (e.g., main-sprint-54)'
+        description: 'Base tag for hotfix (e.g., v1.54.0)'
         required: false
         type: string
       hotfix-branch:
@@ -78,8 +78,9 @@ jobs:
 
           if [ "$RELEASE_TYPE" == "sprint" ]; then
             # Sprint release from main
-            TAG_NAME="main-sprint-${SPRINT}"
-            VERSION="1.0.${SPRINT}"
+            # SemVer: v{major}.{sprint}.0
+            TAG_NAME="v1.${SPRINT}.0"
+            VERSION="1.${SPRINT}.0"
             REF="main"
 
             # Check if tag already exists
@@ -90,6 +91,7 @@ jobs:
 
           else
             # Hotfix release
+            # SemVer: v{major}.{sprint}.{hotfix}
             HOTFIX_NUM="${{ inputs.hotfix-number }}"
             BASE_TAG="${{ inputs.base-tag }}"
             HOTFIX_BRANCH="${{ inputs.hotfix-branch }}"
@@ -116,8 +118,8 @@ jobs:
               exit 1
             fi
 
-            TAG_NAME="hotfix-sprint-${SPRINT}-${HOTFIX_NUM}"
-            VERSION="1.0.${SPRINT}.${HOTFIX_NUM}"
+            TAG_NAME="v1.${SPRINT}.${HOTFIX_NUM}"
+            VERSION="1.${SPRINT}.${HOTFIX_NUM}"
             REF="${HOTFIX_BRANCH}"
 
             # Check if tag already exists

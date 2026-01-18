@@ -43,7 +43,7 @@ workflows/
 │   release.yml (type: sprint)                                             │
 │        │                                                                 │
 │        ├───► Build from main                                             │
-│        ├───► Create tag: main-sprint-54                                  │
+│        ├───► Create tag: v1.54.0                                         │
 │        ├───► Deploy QA                                                   │
 │        ├───► Deploy Stage                                                │
 │        └───► Upload artifact.zip to GitHub Release                       │
@@ -68,13 +68,13 @@ workflows/
 ## Hotfix Flow
 
 ```
-Production Bug Found (running main-sprint-54)
+Production Bug Found (running v1.54.0)
          │
          ▼
 ┌─────────────────────────────────────┐
 │ 1. Create hotfix branch             │
 │    Run: create-hotfix-branch.yml    │
-│    - base-tag: main-sprint-54       │
+│    - base-tag: v1.54.0              │
 │    - incident-id: INC001234         │
 │    - description: fix-login-bug     │
 │    Creates: hotfix/INC001234-fix-login-bug
@@ -96,25 +96,25 @@ Production Bug Found (running main-sprint-54)
 │    type: hotfix                     │
 │    sprint-number: 54                │
 │    hotfix-number: 1                 │
-│    base-tag: main-sprint-54         │
+│    base-tag: v1.54.0                │
 │    hotfix-branch: hotfix/INC001234-fix-login-bug
 └─────────────────────────────────────┘
          │
          ├───► Build from hotfix branch
-         ├───► Create tag: hotfix-sprint-54-1
+         ├───► Create tag: v1.54.1
          ├───► Deploy QA
          └───► GitHub Release
          │
          ▼
 ┌─────────────────────────────────────┐
-│ 4. Deploy Stage                     │
-│    tag: hotfix-sprint-54-1          │
+│ 4. Deploy Stage (in release.yml)    │
+│    tag: v1.54.1                     │
 └─────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
 │ 5. Deploy Prod                      │
-│    tag: hotfix-sprint-54-1          │
+│    tag: v1.54.1                     │
 └─────────────────────────────────────┘
          │
          ▼
@@ -126,12 +126,12 @@ Production Bug Found (running main-sprint-54)
 └─────────────────────────────────────┘
 ```
 
-## Tag Naming
+## Tag Naming (SemVer)
 
 | Type | Format | Example |
 |------|--------|---------|
-| Sprint | `main-sprint-{number}` | `main-sprint-54` |
-| Hotfix | `hotfix-sprint-{sprint}-{hotfix}` | `hotfix-sprint-54-1` |
+| Sprint | `v1.{sprint}.0` | `v1.54.0` |
+| Hotfix | `v1.{sprint}.{patch}` | `v1.54.1` |
 | Production | `prod` | Points to current prod release |
 
 ## Workflows
@@ -189,16 +189,17 @@ Create these in **Settings → Environments**:
 
 ### Sprint Release
 ```
-Actions → Release → Run workflow
+Actions → Release & Deploy → Run workflow
 ├── release-type: sprint
 ├── sprint-number: 54
 └── release-notes: Sprint 54 release
+→ Creates: v1.54.0
 ```
 
 ### Create Hotfix Branch
 ```
 Actions → Create Hotfix Branch → Run workflow
-├── base-tag: main-sprint-54
+├── base-tag: v1.54.0
 ├── incident-id: INC001234
 └── description: fix-login-bug
 → Creates: hotfix/INC001234-fix-login-bug
@@ -206,23 +207,24 @@ Actions → Create Hotfix Branch → Run workflow
 
 ### Hotfix Release
 ```
-Actions → Release → Run workflow
+Actions → Release & Deploy → Run workflow
 ├── release-type: hotfix
 ├── sprint-number: 54
 ├── hotfix-number: 1
-├── base-tag: main-sprint-54
+├── base-tag: v1.54.0
 └── hotfix-branch: hotfix/INC001234-fix-login-bug
+→ Creates: v1.54.1
 ```
 
 ### Deploy to Prod
 ```
 Actions → Deploy Prod → Run workflow
-├── tag: main-sprint-54
+├── tag: v1.54.0
 └── change-ticket: CHG0012345
 ```
 
 ### Rollback
 ```
 Actions → Deploy Prod → Run workflow
-└── tag: main-sprint-53  ← Previous release tag
+└── tag: v1.53.0  ← Previous release tag
 ```
