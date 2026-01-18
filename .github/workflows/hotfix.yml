@@ -38,6 +38,10 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+  actions: read
+
 concurrency:
   group: hotfix
   cancel-in-progress: false

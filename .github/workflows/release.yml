@@ -40,6 +40,10 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+  actions: read
+
 concurrency:
   group: release-${{ inputs.release-type }}
   cancel-in-progress: false
