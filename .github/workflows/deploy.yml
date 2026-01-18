@@ -1,0 +1,111 @@
+# =============================================================================
+# REUSABLE DEPLOY WORKFLOW
+# =============================================================================
+# Dummy deployment - replace with actual deployment commands when ready
+# =============================================================================
+
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment (qa, stage, prod)'
+        required: true
+        type: string
+      artifact-name:
+        description: 'Name of the artifact to deploy'
+        required: true
+        type: string
+      version:
+        description: 'Version being deployed'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://${{ inputs.environment }}.example.com
+
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ./deploy
+
+      - name: Display deployment info
+        run: |
+          echo "=========================================="
+          echo "  DEPLOYMENT"
+          echo "=========================================="
+          echo "Environment : ${{ inputs.environment }}"
+          echo "Version     : ${{ inputs.version }}"
+          echo "Artifact    : ${{ inputs.artifact-name }}"
+          echo "Timestamp   : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Actor       : ${{ github.actor }}"
+          echo "Run ID      : ${{ github.run_id }}"
+          echo "=========================================="
+
+      - name: Verify artifact
+        run: |
+          echo "Verifying artifact contents..."
+          ls -la ./deploy/
+          echo ""
+          echo "Build info:"
+          cat ./deploy/build-info.json
+
+      - name: Deploy to ${{ inputs.environment }}
+        run: |
+          echo "Deploying to ${{ inputs.environment }}..."
+
+          # ==============================================
+          # REPLACE THIS WITH ACTUAL DEPLOYMENT COMMANDS
+          # ==============================================
+          # Example commands for different platforms:
+          #
+          # Azure App Service:
+          # az webapp deploy --resource-group ${{ vars.AZURE_RG }} \
+          #   --name ${{ vars.AZURE_APP_NAME }} \
+          #   --src-path ./deploy
+          #
+          # AWS S3 + CloudFront:
+          # aws s3 sync ./deploy s3://${{ vars.S3_BUCKET }}
+          # aws cloudfront create-invalidation --distribution-id ${{ vars.CF_DIST_ID }}
+          #
+          # Kubernetes:
+          # kubectl set image deployment/${{ vars.K8S_DEPLOYMENT }} \
+          #   app=${{ vars.CONTAINER_REGISTRY }}/calculator:${{ inputs.version }}
+          #
+          # Docker:
+          # docker build -t ${{ vars.CONTAINER_REGISTRY }}/calculator:${{ inputs.version }} .
+          # docker push ${{ vars.CONTAINER_REGISTRY }}/calculator:${{ inputs.version }}
+          #
+          # SSH:
+          # scp -r ./deploy/* ${{ secrets.SSH_USER }}@${{ vars.SERVER_HOST }}:/var/www/app/
+          # ==============================================
+
+          sleep 2  # Simulate deployment time
+          echo "Deployment complete!"
+
+      - name: Smoke test
+        run: |
+          echo "Running smoke tests for ${{ inputs.environment }}..."
+
+          # Example: curl -f https://${{ inputs.environment }}.example.com/health
+
+          echo "Smoke tests passed!"
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ inputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| URL | https://${{ inputs.environment }}.example.com |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ✅ Success |" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,112 @@
+# =============================================================================
+# REUSABLE BUILD WORKFLOW
+# =============================================================================
+# Build once, deploy to all environments
+# Creates versioned artifact that flows through all environments unchanged
+# =============================================================================
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version number for the build'
+        required: true
+        type: string
+      is-release:
+        description: 'Is this a release build'
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      artifact-name:
+        description: 'Name of the uploaded artifact'
+        value: ${{ jobs.build.outputs.artifact-name }}
+      version:
+        description: 'Version of the build'
+        value: ${{ jobs.build.outputs.version }}
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.set-artifact-name.outputs.artifact-name }}
+      version: ${{ inputs.version }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Set artifact name
+        id: set-artifact-name
+        run: |
+          ARTIFACT_NAME="calculator-${{ inputs.version }}"
+          echo "artifact-name=${ARTIFACT_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: |
+          dotnet build --no-restore \
+            --configuration Release \
+            -p:Version=${{ inputs.version }} \
+            -p:AssemblyVersion=${{ inputs.version }} \
+            -p:FileVersion=${{ inputs.version }}
+
+      - name: Run tests
+        run: |
+          dotnet test --no-build \
+            --configuration Release \
+            --verbosity normal \
+            --logger "trx;LogFileName=test-results.trx" \
+            --collect:"XPlat Code Coverage" \
+            --results-directory ./TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ inputs.version }}
+          path: |
+            **/test-results.trx
+            **/coverage.cobertura.xml
+          retention-days: 30
+
+      - name: Publish application
+        run: |
+          dotnet publish src/Calculator/Calculator.csproj \
+            --no-build \
+            --configuration Release \
+            --output ./publish
+
+      - name: Add build metadata
+        run: |
+          cat > ./publish/build-info.json << EOF
+          {
+            "version": "${{ inputs.version }}",
+            "buildNumber": "${{ github.run_number }}",
+            "buildId": "${{ github.run_id }}",
+            "commit": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "isRelease": ${{ inputs.is-release }}
+          }
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.set-artifact-name.outputs.artifact-name }}
+          path: ./publish
+          retention-days: 90
+          if-no-files-found: error

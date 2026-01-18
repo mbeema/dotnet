@@ -1,0 +1,101 @@
+# =============================================================================
+# CI/CD WORKFLOW - MAIN BRANCH
+# =============================================================================
+# Triggered on: Push to main (after PR merge)
+# Pipeline: Build → Deploy to QA
+# Artifact is stored for subsequent sprint release and production deployment
+# =============================================================================
+
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+
+concurrency:
+  group: cicd-main
+  cancel-in-progress: false  # Don't cancel in-progress deployments
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_NOLOGO: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Generate version based on run number
+  # ---------------------------------------------------------------------------
+  version:
+    name: Generate Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short-sha: ${{ steps.version.outputs.short-sha }}
+
+    steps:
+      - name: Generate version
+        id: version
+        run: |
+          # Format: 1.0.{run_number}
+          VERSION="1.0.${{ github.run_number }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "short-sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+  # ---------------------------------------------------------------------------
+  # Build (reusable workflow)
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      is-release: false
+
+  # ---------------------------------------------------------------------------
+  # Deploy to QA (automatic after successful build)
+  # ---------------------------------------------------------------------------
+  deploy-qa:
+    name: Deploy to QA
+    needs: [version, build]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: qa
+      artifact-name: ${{ needs.build.outputs.artifact-name }}
+      version: ${{ needs.version.outputs.version }}
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Summary
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Pipeline Summary
+    needs: [version, build, deploy-qa]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## CI/CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Pipeline Status" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deploy QA | ${{ needs.deploy-qa.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Artifact **calculator-${{ needs.version.outputs.version }}** is ready for sprint release" >> $GITHUB_STEP_SUMMARY
+          echo "- Run **Sprint Release** workflow to deploy to Stage" >> $GITHUB_STEP_SUMMARY
