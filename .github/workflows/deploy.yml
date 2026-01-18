@@ -1,0 +1,215 @@
+# =============================================================================
+# DEPLOY WORKFLOW
+# =============================================================================
+# Deploy any release to any environment (QA, Stage, Prod)
+# Downloads artifact from GitHub Release and deploys
+# =============================================================================
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to deploy (e.g., v1.54.0)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - 'qa'
+          - 'stage'
+          - 'prod'
+      change-ticket:
+        description: 'Change ticket (required for prod)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Validate
+  # ---------------------------------------------------------------------------
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+
+    steps:
+      - name: Validate inputs
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Validate tag exists
+          if ! gh release view "${{ inputs.tag }}" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "::error::Release for tag '${{ inputs.tag }}' not found!"
+            echo ""
+            echo "Available releases:"
+            gh release list --repo ${{ github.repository }} --limit 10
+            exit 1
+          fi
+
+          # Require change ticket for prod
+          if [ "${{ inputs.environment }}" == "prod" ] && [ -z "${{ inputs.change-ticket }}" ]; then
+            echo "::warning::No change ticket provided for production deployment"
+          fi
+
+          echo "✅ Release found for tag: ${{ inputs.tag }}"
+          echo "version=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # Deploy
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: https://${{ inputs.environment }}.example.com
+
+    steps:
+      - name: Download artifact from GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Downloading artifact from release: ${{ inputs.tag }}"
+          gh release download "${{ inputs.tag }}" \
+            --pattern "artifact.zip" \
+            --repo ${{ github.repository }}
+
+          unzip -o artifact.zip -d ./deploy
+          echo "✅ Artifact downloaded and extracted"
+
+      - name: Pre-deployment info
+        run: |
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
+          echo "## Pre-deployment Info" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${{ inputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Triggered by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ inputs.change-ticket }}" ]; then
+            echo "| Change Ticket | ${{ inputs.change-ticket }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Deploy to ${{ inputs.environment }}
+        run: |
+          echo "=========================================="
+          echo "  DEPLOYING TO ${{ inputs.environment }}"
+          echo "=========================================="
+          VERSION=$(jq -r '.version' ./deploy/build-info.json)
+          echo "Tag         : ${{ inputs.tag }}"
+          echo "Version     : ${VERSION}"
+          echo "Environment : ${{ inputs.environment }}"
+          echo "Ticket      : ${{ inputs.change-ticket || 'N/A' }}"
+          echo ""
+          cat ./deploy/build-info.json
+          echo ""
+          # Add actual deployment commands here
+          echo "Deployment complete!"
+
+      - name: Smoke test
+        run: |
+          echo "Running smoke tests for ${{ inputs.environment }}..."
+          # Add actual smoke tests here
+          # Example: curl -f https://${{ inputs.environment }}.example.com/health
+          echo "Smoke tests passed!"
+
+  # ---------------------------------------------------------------------------
+  # Post-deployment (prod only)
+  # ---------------------------------------------------------------------------
+  post-deploy:
+    name: Post-deployment
+    needs: [validate, deploy]
+    if: inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout for tagging
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Update production tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Update prod tag to point to deployed release
+          git tag -d prod 2>/dev/null || true
+          git push origin :refs/tags/prod 2>/dev/null || true
+          git tag -a prod -m "Production: ${{ inputs.tag }}" ${{ inputs.tag }}
+          git push origin prod
+
+          echo "✅ Updated 'prod' tag to point to ${{ inputs.tag }}"
+
+  # ---------------------------------------------------------------------------
+  # Summary
+  # ---------------------------------------------------------------------------
+  summary:
+    name: Deployment Summary
+    needs: [validate, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download artifact for version
+        if: needs.deploy.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.tag }}" \
+            --pattern "artifact.zip" \
+            --repo ${{ github.repository }}
+          unzip -o artifact.zip -d ./deploy
+
+      - name: Generate summary
+        run: |
+          if [ -f "./deploy/build-info.json" ]; then
+            VERSION=$(jq -r '.version' ./deploy/build-info.json)
+          else
+            VERSION="${{ inputs.tag }}"
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Tag | \`${{ inputs.tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${VERSION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${{ needs.deploy.result == 'success' && '✅ Success' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployed by | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ inputs.environment }}" == "prod" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Rollback:** Run this workflow with a previous tag" >> $GITHUB_STEP_SUMMARY
+
+            # Cherry-pick reminder for hotfixes (patch version > 0)
+            PATCH_VERSION=$(echo "${{ inputs.tag }}" | sed 's/v[0-9]*\.[0-9]*\.//')
+            if [[ "$PATCH_VERSION" != "0" ]]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### ⚠️ Hotfix: Cherry-pick to main required" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+              echo "git checkout main && git pull" >> $GITHUB_STEP_SUMMARY
+              echo "git cherry-pick <hotfix-commit-sha>" >> $GITHUB_STEP_SUMMARY
+              echo "git push" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi

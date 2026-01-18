@@ -2,7 +2,7 @@
 
 ## Overview
 
-Trunk-based development with 2-week sprints. Build once, deploy to all environments.
+Trunk-based development with 2-week sprints. Build once, deploy anywhere.
 
 ## Pipeline Architecture
 
@@ -10,9 +10,9 @@ Trunk-based development with 2-week sprints. Build once, deploy to all environme
 workflows/
 ├── build.yml                 # Reusable: Build & test
 ├── pr-validation.yml         # PR checks
-├── ci-cd.yml                # Merge to main → QA (automatic)
-├── release.yml              # Sprint/Hotfix → Build → Tag → QA → Stage → GitHub Release
-├── deploy-prod.yml          # Download → Prod (with approval)
+├── ci-cd.yml                # Push to main → Build → QA (continuous)
+├── release.yml              # Build → Tag → GitHub Release (manual + scheduled)
+├── deploy.yml               # Deploy any release to any environment
 └── create-hotfix-branch.yml # Create hotfix branch from tag
 ```
 
@@ -37,33 +37,44 @@ workflows/
 └─────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    RELEASE & DEPLOY (Manual - Sprint End)                │
+│                    RELEASE (Manual or Scheduled)                         │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   release.yml (type: sprint)                                             │
+│   release.yml                                                            │
 │        │                                                                 │
-│        ├───► Build from main                                             │
+│        ├───► Build from main (or hotfix branch)                          │
 │        ├───► Create tag: v1.54.0                                         │
-│        ├───► Deploy QA                                                   │
-│        ├───► Deploy Stage                                                │
 │        └───► Upload artifact.zip to GitHub Release                       │
+│                                                                          │
+│   ⏰ Scheduled: Every Tuesday 6 PM UTC (sprint end)                      │
 │                                                                          │
 └────────────────────────────────────┬────────────────────────────────────┘
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    DEPLOY PROD (Manual + Approval)                       │
+│                    DEPLOY (Manual - Any Environment)                     │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│   deploy-prod.yml                                                        │
+│   deploy.yml                                                             │
 │        │                                                                 │
-│        ├───► Download artifact.zip from GitHub Release                   │
-│        ├───► ⏸️ Environment Approval                                     │
-│        ├───► Deploy Prod (same artifact)                                 │
-│        └───► Update 'prod' tag                                           │
+│        ├───► Select tag (e.g., v1.54.0)                                  │
+│        ├───► Select environment (QA / Stage / Prod)                      │
+│        ├───► Download artifact from GitHub Release                       │
+│        ├───► Deploy to selected environment                              │
+│        └───► (Prod only) Update 'prod' tag + require approval            │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Flexible Deployment Scenarios
+
+| Scenario | How |
+|----------|-----|
+| Sprint release to all envs | release.yml → deploy.yml (QA) → deploy.yml (Stage) → deploy.yml (Prod) |
+| Direct to Stage | release.yml → deploy.yml (Stage) |
+| Hotfix to Prod | release.yml (hotfix) → deploy.yml (Prod) |
+| Rollback | deploy.yml with previous tag |
+| Test in QA | deploy.yml (QA) with any tag |
 
 ## Hotfix Flow
 
@@ -98,28 +109,20 @@ Production Bug Found (running v1.54.0)
 │    hotfix-number: 1                 │
 │    base-tag: v1.54.0                │
 │    hotfix-branch: hotfix/INC001234-fix-login-bug
-└─────────────────────────────────────┘
-         │
-         ├───► Build from hotfix branch
-         ├───► Create tag: v1.54.1
-         ├───► Deploy QA
-         └───► GitHub Release
-         │
-         ▼
-┌─────────────────────────────────────┐
-│ 4. Deploy Stage (in release.yml)    │
-│    tag: v1.54.1                     │
+│    Creates: v1.54.1                 │
 └─────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
-│ 5. Deploy Prod                      │
-│    tag: v1.54.1                     │
+│ 4. Deploy to any environment        │
+│    Run: deploy.yml                  │
+│    - tag: v1.54.1                   │
+│    - environment: prod (or stage)   │
 └─────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
-│ 6. Cherry-pick to main              │
+│ 5. Cherry-pick to main              │
 │    git checkout main                │
 │    git cherry-pick <sha>            │
 │    git push                         │
@@ -139,38 +142,19 @@ Production Bug Found (running v1.54.0)
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `pr-validation.yml` | PR to main | Build, test, security |
-| `ci-cd.yml` | Push to main | Build → QA (automatic) |
+| `ci-cd.yml` | Push to main | Build → QA (continuous) |
+| `release.yml` | Manual / Scheduled | Build → Tag → GitHub Release |
+| `deploy.yml` | Manual | Deploy any release to any environment |
 | `create-hotfix-branch.yml` | Manual | Create hotfix branch from tag |
-| `release.yml` | Manual | Sprint/Hotfix → QA → Stage |
-| `deploy-prod.yml` | Manual | Download → Prod |
 
-## Build Once, Deploy All
+## Scheduled Release
 
-```
-Release Workflow (Sprint or Hotfix)
-         │
-         ▼
-┌─────────────────────┐
-│       BUILD         │ ← Runs once
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│    GitHub Release   │ ← artifact.zip stored
-│    + artifact.zip   │
-└─────────────────────┘
-         │
-         ├───► QA    (deploy in release workflow)
-         │
-         ▼
-┌─────────────────────┐
-│   deploy-stage.yml  │ ← Downloads same artifact.zip
-└─────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│   deploy-prod.yml   │ ← Downloads same artifact.zip
-└─────────────────────┘
+The release workflow runs automatically every **Tuesday at 6 PM UTC** (sprint end).
+
+To modify the schedule, edit the cron expression in `release.yml`:
+```yaml
+schedule:
+  - cron: '0 18 * * 2'  # Every Tuesday at 18:00 UTC
 ```
 
 ## Environment Setup
@@ -189,11 +173,19 @@ Create these in **Settings → Environments**:
 
 ### Sprint Release
 ```
-Actions → Release & Deploy → Run workflow
+Actions → Release → Run workflow
 ├── release-type: sprint
 ├── sprint-number: 54
 └── release-notes: Sprint 54 release
 → Creates: v1.54.0
+```
+
+### Deploy to Any Environment
+```
+Actions → Deploy → Run workflow
+├── tag: v1.54.0
+├── environment: qa / stage / prod
+└── change-ticket: CHG0012345 (for prod)
 ```
 
 ### Create Hotfix Branch
@@ -207,7 +199,7 @@ Actions → Create Hotfix Branch → Run workflow
 
 ### Hotfix Release
 ```
-Actions → Release & Deploy → Run workflow
+Actions → Release → Run workflow
 ├── release-type: hotfix
 ├── sprint-number: 54
 ├── hotfix-number: 1
@@ -216,15 +208,9 @@ Actions → Release & Deploy → Run workflow
 → Creates: v1.54.1
 ```
 
-### Deploy to Prod
-```
-Actions → Deploy Prod → Run workflow
-├── tag: v1.54.0
-└── change-ticket: CHG0012345
-```
-
 ### Rollback
 ```
-Actions → Deploy Prod → Run workflow
-└── tag: v1.53.0  ← Previous release tag
+Actions → Deploy → Run workflow
+├── tag: v1.53.0  ← Previous release tag
+└── environment: prod
 ```
