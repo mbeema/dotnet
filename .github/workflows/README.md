@@ -52,7 +52,8 @@ Each workflow displays a descriptive name:
 
 | Workflow | Example Run Names |
 |----------|-------------------|
-| CI | `CI - PR #123`, `CI - main`, `CI - hotfix/INC123-fix` |
+| CI (PR) | `PR #123 - feature/add-login` |
+| CI (push) | `CI - main`, `CI - hotfix/INC123-fix` |
 | Release | `Sprint Release 55`, `Sprint Release (auto)`, `Hotfix Release - hotfix/INC123-fix`, `Scheduled Sprint Release` |
 | Deploy | `Deploy v1.55.0 to stage`, `Deploy v1.55.0 to prod` |
 
