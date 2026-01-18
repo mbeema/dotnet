@@ -48,3 +48,4 @@ public class CalculatorService
 
     public int Min(int a, int b) => Math.Min(a, b);
 }
+
