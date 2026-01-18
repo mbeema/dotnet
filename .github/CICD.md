@@ -8,13 +8,14 @@ Trunk-based development with 2-week sprints. Build once, deploy to all environme
 
 ```
 workflows/
-├── build.yml           # Reusable: Build & test
-├── deploy.yml          # Reusable: Deploy to environment
-├── pr-validation.yml   # PR checks
-├── ci-cd.yml          # Merge to main → QA (automatic)
-├── release.yml        # Sprint/Hotfix → Build → Tag → QA → GitHub Release
-├── deploy-stage.yml   # Download → Stage
-└── deploy-prod.yml    # Download → Prod (with approval)
+├── build.yml               # Reusable: Build & test
+├── deploy.yml              # Reusable: Deploy to environment
+├── pr-validation.yml       # PR checks
+├── ci-cd.yml              # Merge to main → QA (automatic)
+├── release.yml            # Sprint/Hotfix → Build → Tag → QA → GitHub Release
+├── deploy-stage.yml       # Download → Stage
+├── deploy-prod.yml        # Download → Prod (with approval)
+└── create-hotfix-branch.yml # Create hotfix branch from tag
 ```
 
 ## Flow Diagram
@@ -84,14 +85,22 @@ Production Bug Found (running main-sprint-54)
          │
          ▼
 ┌─────────────────────────────────────┐
-│ 1. Create hotfix branch from tag    │
-│    git checkout -b hotfix/INC001 main-sprint-54
+│ 1. Create hotfix branch             │
+│    Run: create-hotfix-branch.yml    │
+│    - base-tag: main-sprint-54       │
+│    - incident-id: INC001234         │
+│    - description: fix-login-bug     │
+│    Creates: hotfix/INC001234-fix-login-bug
 └─────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
-│ 2. Fix, commit, push                │
-│    git push -u origin hotfix/INC001 │
+│ 2. Checkout, fix, commit, push      │
+│    git fetch origin                 │
+│    git checkout hotfix/INC001234-fix-login-bug
+│    # make fixes                     │
+│    git add . && git commit -m "fix: ..."
+│    git push                         │
 └─────────────────────────────────────┘
          │
          ▼
@@ -101,7 +110,7 @@ Production Bug Found (running main-sprint-54)
 │    sprint-number: 54                │
 │    hotfix-number: 1                 │
 │    base-tag: main-sprint-54         │
-│    hotfix-branch: hotfix/INC001     │
+│    hotfix-branch: hotfix/INC001234-fix-login-bug
 └─────────────────────────────────────┘
          │
          ├───► Build from hotfix branch
@@ -144,6 +153,7 @@ Production Bug Found (running main-sprint-54)
 |----------|---------|---------|
 | `pr-validation.yml` | PR to main | Build, test, security |
 | `ci-cd.yml` | Push to main | Build → QA (automatic) |
+| `create-hotfix-branch.yml` | Manual | Create hotfix branch from tag |
 | `release.yml` | Manual | Sprint or Hotfix release |
 | `deploy-stage.yml` | Manual | Download → Stage |
 | `deploy-prod.yml` | Manual | Download → Prod |
@@ -199,6 +209,15 @@ Actions → Release → Run workflow
 └── release-notes: Sprint 54 release
 ```
 
+### Create Hotfix Branch
+```
+Actions → Create Hotfix Branch → Run workflow
+├── base-tag: main-sprint-54
+├── incident-id: INC001234
+└── description: fix-login-bug
+→ Creates: hotfix/INC001234-fix-login-bug
+```
+
 ### Hotfix Release
 ```
 Actions → Release → Run workflow
@@ -206,7 +225,7 @@ Actions → Release → Run workflow
 ├── sprint-number: 54
 ├── hotfix-number: 1
 ├── base-tag: main-sprint-54
-└── hotfix-branch: hotfix/INC001-fix
+└── hotfix-branch: hotfix/INC001234-fix-login-bug
 ```
 
 ### Deploy to Stage
